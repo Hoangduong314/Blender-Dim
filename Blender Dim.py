@@ -190,6 +190,7 @@ def update_all_dimensions(self, context):
                     child.data.body = text_str
                     child.data.size = t_size
                     if custom_font: child.data.font = custom_font
+                    child.data.align_y = 'BOTTOM'
                     z_lift = max(dist_raw * 0.002, 0.001)
                     child.location = ((d1_loc + d2_loc) / 2) + Y * t_gap + Z * z_lift
 
@@ -279,7 +280,6 @@ def create_real_dimension(data, context):
     Y = Z.cross(X).normalized()
 
     align_y = 'BOTTOM'
-    if Y.dot(offset_dir) < 0: align_y = 'TOP'
 
     rot_matrix = Matrix((X, Y, Z)).transposed()
     plane_rotation = rot_matrix.to_euler('XYZ')
@@ -371,7 +371,6 @@ class OT_SketchupProDim(bpy.types.Operator):
             Y = Z.cross(X).normalized()
 
             align_y = 'BOTTOM'
-            if Y.dot(offset_dir) < 0: align_y = 'TOP'
 
             preview_text.data.align_y = align_y
             rot_matrix = Matrix((X, Y, Z)).transposed()
