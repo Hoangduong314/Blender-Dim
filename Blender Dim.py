@@ -35,9 +35,7 @@ STYLE_COPY_FIELDS = (
     "dim_show_suffix",
     "dim_precision",
     "dim_font_path",
-    "dim_color",
     "dim_text_color",
-    "dim_brightness",
     "dim_scale_x",
     "dim_text_size_mm",
     "dim_text_gap_mm",
@@ -192,7 +190,7 @@ def get_formatted_text(dist_bu, scene, style):
     return result
 
 
-def setup_shadeless_mat(mat_name, color, strength):
+def setup_shadeless_mat(mat_name, color):
     mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
     mat.use_nodes = True
     mat.diffuse_color = color
@@ -215,37 +213,36 @@ def setup_shadeless_mat(mat_name, color, strength):
         mix_node.inputs[0].default_value = color[3]
 
         transp_node = nodes.new('ShaderNodeBsdfTransparent')
-        emiss_node = nodes.new('ShaderNodeEmission')
-        emiss_node.inputs[0].default_value = (color[0], color[1], color[2], 1.0)
-        emiss_node.inputs[1].default_value = strength
+        bsdf_node = nodes.new('ShaderNodeBsdfPrincipled')
+        bsdf_node.inputs[0].default_value = (color[0], color[1], color[2], 1.0)
+        if len(bsdf_node.inputs) > 4:
+            bsdf_node.inputs[4].default_value = 1.0
 
         links.new(transp_node.outputs[0], mix_node.inputs[1])
-        links.new(emiss_node.outputs[0], mix_node.inputs[2])
+        links.new(bsdf_node.outputs[0], mix_node.inputs[2])
         links.new(mix_node.outputs[0], out_node.inputs[0])
     else:
-        emiss_node = nodes.new('ShaderNodeEmission')
-        emiss_node.inputs[0].default_value = color
-        emiss_node.inputs[1].default_value = strength
-        links.new(emiss_node.outputs[0], out_node.inputs[0])
+        bsdf_node = nodes.new('ShaderNodeBsdfPrincipled')
+        bsdf_node.inputs[0].default_value = color
+        if len(bsdf_node.inputs) > 4:
+            bsdf_node.inputs[4].default_value = 1.0
+        links.new(bsdf_node.outputs[0], out_node.inputs[0])
 
     return mat
 
 
 def get_style_materials(style):
     style_key = sanitize_name(style.style_id)
-    line_color = tuple(style.dim_color)
     text_color = tuple(style.dim_text_color)
-    strength = style.dim_brightness
-
+    line_color = text_color
     return {
         "ext": setup_shadeless_mat(
             f"Mat_Ext_{style_key}",
             (line_color[0], line_color[1], line_color[2], 0.8),
-            strength,
         ),
-        "dim": setup_shadeless_mat(f"Mat_Dim_{style_key}", line_color, strength),
-        "text": setup_shadeless_mat(f"Mat_Dim_Text_{style_key}", text_color, strength),
-        "preview": setup_shadeless_mat(f"Mat_Dim_Text_Preview_{style_key}", text_color, strength),
+        "dim": setup_shadeless_mat(f"Mat_Dim_{style_key}", line_color),
+        "text": setup_shadeless_mat(f"Mat_Dim_Text_{style_key}", text_color),
+        "preview": setup_shadeless_mat(f"Mat_Dim_Text_Preview_{style_key}", text_color),
     }
 
 
@@ -545,15 +542,7 @@ class DimStyleItem(bpy.types.PropertyGroup):
         subtype='FILE_PATH',
         update=update_all_dimensions,
     )
-    dim_color: bpy.props.FloatVectorProperty(
-        name="Line Color",
-        subtype='COLOR',
-        size=4,
-        min=0.0,
-        max=1.0,
-        default=(1.0, 0.0, 0.0, 1.0),
-        update=update_all_dimensions,
-    )
+
     dim_text_color: bpy.props.FloatVectorProperty(
         name="Text Color",
         subtype='COLOR',
@@ -561,13 +550,6 @@ class DimStyleItem(bpy.types.PropertyGroup):
         min=0.0,
         max=1.0,
         default=(0.0, 0.0, 0.0, 1.0),
-        update=update_all_dimensions,
-    )
-    dim_brightness: bpy.props.FloatProperty(
-        name="Emission Strength",
-        default=3.0,
-        min=1.0,
-        max=50.0,
         update=update_all_dimensions,
     )
     dim_scale_x: bpy.props.FloatProperty(name="Scale", default=100.0, min=1.0, update=update_all_dimensions)
@@ -830,7 +812,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         style = get_active_style(context.scene)
         free_dir = v_perp.normalized()
         best_dir = free_dir
-        snap_color = style.dim_color
+        snap_color = tuple(style.dim_text_color)
         final_dist = v_perp.length
 
         axes = {
@@ -992,7 +974,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             'd1': None,
             'd2': None,
             'offset_dir': None,
-            'snap_color': tuple(active_style.dim_color),
+            'snap_color': tuple(active_style.dim_text_color),
         }
 
         remove_preview_text()
@@ -1084,9 +1066,7 @@ class VIEW3D_PT_ProDim(bpy.types.Panel):
         visual_box = layout.box()
         visual_box.label(text="Visual Style:")
         visual_box.prop(style, "dim_font_path", text="Font File")
-        visual_box.prop(style, "dim_color", text="Line Color")
         visual_box.prop(style, "dim_text_color", text="Text Color")
-        visual_box.prop(style, "dim_brightness", text="Emission Strength")
 
 
 
@@ -1135,6 +1115,8 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
+
 
 
 
