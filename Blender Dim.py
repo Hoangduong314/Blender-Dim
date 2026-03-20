@@ -664,6 +664,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         'offset_dir': None,
         'snap_color': (1.0, 0.0, 0.0, 1.0),
         'p2_constraint': None,
+        'snap_cache': None,
     }
 
     @classmethod
@@ -712,7 +713,45 @@ class OT_SketchupProDim(bpy.types.Operator):
 
     def get_snap_settings(self, context):
         tool_settings = context.scene.tool_settings
-        return tool_settings.use_snap, set(tool_settings.snap_elements)
+        snap_elements = set(tool_settings.snap_elements) if tool_settings.use_snap else set()
+        snap_target = getattr(tool_settings, "snap_target", 'CLOSEST')
+        return tool_settings.use_snap, snap_elements, snap_target
+
+    def ensure_snap_cache(self, context):
+        cls_data = self.__class__.data
+        if cls_data.get('snap_cache') is not None:
+            return cls_data['snap_cache']
+
+        depsgraph = context.evaluated_depsgraph_get()
+        snap_cache = []
+        for obj in context.visible_objects:
+            if obj.type != 'MESH' or obj.hide_get():
+                continue
+
+            obj_eval = obj.evaluated_get(depsgraph)
+            try:
+                mesh = obj_eval.to_mesh()
+            except RuntimeError:
+                continue
+
+            if mesh is None or len(mesh.vertices) == 0:
+                obj_eval.to_mesh_clear()
+                continue
+
+            world_matrix = obj_eval.matrix_world.copy()
+            verts = [world_matrix @ vert.co for vert in mesh.vertices]
+            edges = [tuple(edge.vertices) for edge in mesh.edges]
+            snap_cache.append({
+                'verts': verts,
+                'edges': edges,
+            })
+            obj_eval.to_mesh_clear()
+
+        cls_data['snap_cache'] = snap_cache
+        return snap_cache
+
+    def clear_snap_cache(self):
+        self.__class__.data['snap_cache'] = None
 
     def closest_point_on_segment_2d(self, point, a, b):
         ab = b - a
@@ -722,73 +761,90 @@ class OT_SketchupProDim(bpy.types.Operator):
         t = max(0.0, min(1.0, (point - a).dot(ab) / length_sq))
         return a + ab * t, t
 
-    def get_vertex_snap_candidate(self, region, rv3d, poly, mat, mesh, mouse_2d, threshold):
-        best = None
+    def get_vertex_snap_candidate(self, region, rv3d, snap_cache, mouse_2d, threshold):
+        best_loc = None
         best_dist = threshold
-        for v_idx in poly.vertices:
-            v_world = mat @ mesh.vertices[v_idx].co
-            v_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v_world)
-            if not v_2d:
-                continue
-            dist_2d = (v_2d - mouse_2d).length
-            if dist_2d < best_dist:
-                best = v_world
-                best_dist = dist_2d
-        return best, best_dist
+        for entry in snap_cache:
+            for world_loc in entry['verts']:
+                screen_loc = view3d_utils.location_3d_to_region_2d(region, rv3d, world_loc)
+                if screen_loc is None:
+                    continue
+                dist_2d = (screen_loc - mouse_2d).length
+                if dist_2d < best_dist:
+                    best_loc = world_loc.copy()
+                    best_dist = dist_2d
+        return best_loc, best_dist
 
-    def get_edge_snap_candidate(self, region, rv3d, poly, mat, mesh, mouse_2d, threshold):
-        best = None
+    def get_edge_snap_candidate(self, region, rv3d, snap_cache, mouse_2d, threshold, midpoint_only=False):
+        best_loc = None
         best_dist = threshold
-        for edge_key in poly.edge_keys:
-            v1_world = mat @ mesh.vertices[edge_key[0]].co
-            v2_world = mat @ mesh.vertices[edge_key[1]].co
-            v1_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v1_world)
-            v2_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v2_world)
-            if not v1_2d or not v2_2d:
-                continue
-            closest_2d, factor = self.closest_point_on_segment_2d(mouse_2d, v1_2d, v2_2d)
-            dist_2d = (closest_2d - mouse_2d).length
-            if dist_2d < best_dist:
-                best = v1_world.lerp(v2_world, factor)
-                best_dist = dist_2d
-        return best, best_dist
+        for entry in snap_cache:
+            verts = entry['verts']
+            for v1_idx, v2_idx in entry['edges']:
+                v1_world = verts[v1_idx]
+                v2_world = verts[v2_idx]
+                v1_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v1_world)
+                v2_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v2_world)
+                if v1_2d is None or v2_2d is None:
+                    continue
+
+                if midpoint_only:
+                    midpoint_world = (v1_world + v2_world) * 0.5
+                    midpoint_2d = (v1_2d + v2_2d) * 0.5
+                    dist_2d = (midpoint_2d - mouse_2d).length
+                    if dist_2d < best_dist:
+                        best_loc = midpoint_world
+                        best_dist = dist_2d
+                    continue
+
+                closest_2d, factor = self.closest_point_on_segment_2d(mouse_2d, v1_2d, v2_2d)
+                dist_2d = (closest_2d - mouse_2d).length
+                if dist_2d < best_dist:
+                    best_loc = v1_world.lerp(v2_world, factor)
+                    best_dist = dist_2d
+        return best_loc, best_dist
+
+    def get_face_snap_candidate(self, context, coord):
+        scene = context.scene
+        region = context.region
+        rv3d = context.space_data.region_3d
+        view_vec = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        result, location, _norm, _idx, _obj, _mat = scene.ray_cast(context.view_layer.depsgraph, ray_origin, view_vec)
+        if not result:
+            return None
+        return location
 
     def get_raw_snap_location(self, context, event):
-        scene = context.scene
         region = context.region
         rv3d = context.space_data.region_3d
         coord = (event.mouse_region_x, event.mouse_region_y)
         mouse_2d = Vector(coord)
-        view_vec = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
-        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
-        result, location, _norm, idx, obj, mat = scene.ray_cast(context.view_layer.depsgraph, ray_origin, view_vec)
+        use_snap, snap_elements, _snap_target = self.get_snap_settings(context)
 
-        if not result:
-            return None
-
-        use_snap, snap_elements = self.get_snap_settings(context)
-        if not obj or obj.type != 'MESH':
-            return location
-
-        mesh = obj.data
-        poly = mesh.polygons[idx]
-        threshold = 30.0
-
+        face_loc = self.get_face_snap_candidate(context, coord)
         if not use_snap or not snap_elements:
-            vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, poly, mat, mesh, mouse_2d, threshold)
-            return vertex_loc if vertex_loc is not None and vertex_dist < threshold else location
+            return face_loc
 
+        snap_cache = self.ensure_snap_cache(context)
+        threshold = 18.0
         best_loc = None
         best_dist = threshold
 
         if 'VERTEX' in snap_elements:
-            vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, poly, mat, mesh, mouse_2d, threshold)
+            vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
             if vertex_loc is not None and vertex_dist < best_dist:
                 best_loc = vertex_loc
                 best_dist = vertex_dist
 
-        if 'EDGE' in snap_elements or 'EDGE_MIDPOINT' in snap_elements:
-            edge_loc, edge_dist = self.get_edge_snap_candidate(region, rv3d, poly, mat, mesh, mouse_2d, threshold)
+        if 'EDGE_MIDPOINT' in snap_elements:
+            midpoint_loc, midpoint_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold, midpoint_only=True)
+            if midpoint_loc is not None and midpoint_dist < best_dist:
+                best_loc = midpoint_loc
+                best_dist = midpoint_dist
+
+        if 'EDGE' in snap_elements:
+            edge_loc, edge_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
             if edge_loc is not None and edge_dist < best_dist:
                 best_loc = edge_loc
                 best_dist = edge_dist
@@ -797,9 +853,9 @@ class OT_SketchupProDim(bpy.types.Operator):
             return best_loc
 
         if 'FACE' in snap_elements or 'FACE_NEAREST' in snap_elements:
-            return location
+            return face_loc
 
-        return location
+        return face_loc
 
     def update_proxy_text(self, context):
         preview_text = bpy.data.objects.get("Preview_Dim_Text")
@@ -1112,6 +1168,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             'offset_dir': None,
             'snap_color': tuple(active_style.dim_text_color),
             'p2_constraint': None,
+            'snap_cache': None,
         }
 
         remove_preview_text()
@@ -1124,6 +1181,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         preview_text.hide_viewport = True
 
         self.mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
+        self.clear_snap_cache()
         self.update_step_header(context)
         self.__class__._handle = bpy.types.SpaceView3D.draw_handler_add(self.draw_callback_px, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
@@ -1135,6 +1193,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             context.area.header_text_set(None)
 
         remove_preview_text()
+        self.clear_snap_cache()
 
         if getattr(self.__class__, "_handle", None):
             bpy.types.SpaceView3D.draw_handler_remove(self.__class__._handle, 'WINDOW')
