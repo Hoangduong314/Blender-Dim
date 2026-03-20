@@ -655,17 +655,59 @@ class OT_SketchupProDim(bpy.types.Operator):
     data = {
         'step': 0,
         'snap_loc': None,
+        'snap_loc_raw': None,
         'p1': None,
         'p2': None,
         'd1': None,
         'd2': None,
         'offset_dir': None,
         'snap_color': (1.0, 0.0, 0.0, 1.0),
+        'p2_constraint': None,
     }
 
     @classmethod
     def poll(cls, context):
         return context.area is not None and context.area.type == 'VIEW_3D'
+
+    def get_constraint_axes(self):
+        return {
+            'X': Vector((1, 0, 0)),
+            'Y': Vector((0, 1, 0)),
+            'Z': Vector((0, 0, 1)),
+        }
+
+    def get_constraint_label(self):
+        constraint = self.__class__.data.get('p2_constraint')
+        if not constraint:
+            return 'Free'
+        mode, axis = constraint
+        return f"Axis {axis}" if mode == 'AXIS' else f"Plane !{axis}"
+
+    def update_step_header(self, context):
+        step = self.__class__.data['step']
+        if step == 0:
+            context.area.header_text_set("Step 1: Pick Start Point")
+        elif step == 1:
+            label = self.get_constraint_label()
+            context.area.header_text_set(f"Step 2: Pick End Point | Constraint: {label} | X/Y/Z = Axis, Shift+X/Y/Z = Plane")
+        elif step == 2:
+            context.area.header_text_set("Step 3: Move to set Direction & Distance. Click to finish.")
+
+    def apply_p2_constraint(self, candidate_loc):
+        cls_data = self.__class__.data
+        p1 = cls_data.get('p1')
+        constraint = cls_data.get('p2_constraint')
+        if candidate_loc is None or p1 is None or not constraint:
+            return candidate_loc
+
+        mode, axis_name = constraint
+        axis_vec = self.get_constraint_axes()[axis_name]
+        delta = candidate_loc - p1
+
+        if mode == 'AXIS':
+            return p1 + axis_vec * delta.dot(axis_vec)
+
+        return candidate_loc - axis_vec * delta.dot(axis_vec)
 
     def update_proxy_text(self, context):
         preview_text = bpy.data.objects.get("Preview_Dim_Text")
@@ -724,10 +766,21 @@ class OT_SketchupProDim(bpy.types.Operator):
 
         cls_data = self.__class__.data
 
+        if cls_data['step'] == 1 and event.type in {'X', 'Y', 'Z'} and event.value == 'PRESS':
+            new_constraint = ('PLANE', event.type) if event.shift else ('AXIS', event.type)
+            cls_data['p2_constraint'] = None if cls_data.get('p2_constraint') == new_constraint else new_constraint
+            if cls_data.get('snap_loc_raw') is not None:
+                cls_data['snap_loc'] = self.apply_p2_constraint(cls_data['snap_loc_raw'])
+            self.update_step_header(context)
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+
         if event.type == 'MOUSEMOVE':
             self.mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
             if cls_data['step'] < 2:
-                cls_data['snap_loc'] = self.get_snap_location(context, event)
+                raw_loc = self.get_snap_location(context, event)
+                cls_data['snap_loc_raw'] = raw_loc
+                cls_data['snap_loc'] = self.apply_p2_constraint(raw_loc) if cls_data['step'] == 1 else raw_loc
             elif cls_data['step'] == 2:
                 self.calculate_combined_offset(context)
                 self.update_proxy_text(context)
@@ -737,12 +790,13 @@ class OT_SketchupProDim(bpy.types.Operator):
             if cls_data['step'] == 0 and cls_data['snap_loc']:
                 cls_data['p1'] = cls_data['snap_loc'].copy()
                 cls_data['step'] = 1
-                context.area.header_text_set("Step 2: Pick End Point")
+                cls_data['snap_loc_raw'] = cls_data['snap_loc']
+                self.update_step_header(context)
 
             elif cls_data['step'] == 1 and cls_data['snap_loc']:
                 cls_data['p2'] = cls_data['snap_loc'].copy()
                 cls_data['step'] = 2
-                context.area.header_text_set("Step 3: Move to set Direction & Distance. Click to finish.")
+                self.update_step_header(context)
                 self.calculate_combined_offset(context)
                 self.update_proxy_text(context)
 
@@ -875,6 +929,24 @@ class OT_SketchupProDim(bpy.types.Operator):
                 SHADER.uniform_float("color", (1, 0, 0, 1))
                 batch.draw(SHADER)
 
+        if step == 1 and cls_data['p1'] and cls_data['snap_loc']:
+            p1_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, cls_data['p1'])
+            p2_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, cls_data['snap_loc'])
+            if p1_2d and p2_2d:
+                guide = batch_for_shader(SHADER, 'LINES', {"pos": [p1_2d, p2_2d]})
+                constraint = cls_data.get('p2_constraint')
+                color_map = {
+                    ('AXIS', 'X'): (1.0, 0.2, 0.2, 1.0),
+                    ('AXIS', 'Y'): (0.2, 1.0, 0.2, 1.0),
+                    ('AXIS', 'Z'): (0.2, 0.6, 1.0, 1.0),
+                    ('PLANE', 'X'): (1.0, 0.6, 0.6, 1.0),
+                    ('PLANE', 'Y'): (0.6, 1.0, 0.6, 1.0),
+                    ('PLANE', 'Z'): (0.6, 0.8, 1.0, 1.0),
+                }
+                SHADER.bind()
+                SHADER.uniform_float("color", color_map.get(constraint, (1.0, 1.0, 0.0, 1.0)))
+                guide.draw(SHADER)
+
         if step != 2 or not cls_data['d1'] or not cls_data['d2']:
             return
 
@@ -969,12 +1041,14 @@ class OT_SketchupProDim(bpy.types.Operator):
         self.__class__.data = {
             'step': 0,
             'snap_loc': None,
+            'snap_loc_raw': None,
             'p1': None,
             'p2': None,
             'd1': None,
             'd2': None,
             'offset_dir': None,
             'snap_color': tuple(active_style.dim_text_color),
+            'p2_constraint': None,
         }
 
         remove_preview_text()
@@ -987,7 +1061,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         preview_text.hide_viewport = True
 
         self.mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
-        context.area.header_text_set("Step 1: Pick Start Point")
+        self.update_step_header(context)
         self.__class__._handle = bpy.types.SpaceView3D.draw_handler_add(self.draw_callback_px, (context,), 'WINDOW', 'POST_PIXEL')
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
@@ -1115,6 +1189,7 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
 
 
 
