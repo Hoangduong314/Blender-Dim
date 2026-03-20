@@ -306,13 +306,15 @@ def build_arrow_mesh(mesh, arrow_style, d1_loc, d2_loc, x_axis, y_axis, arrow_si
         v1 = bm.verts.new(d1_loc)
         v2 = bm.verts.new(base1 + y_axis * a_width)
         v3 = bm.verts.new(base1 - y_axis * a_width)
-        bm.faces.new((v1, v2, v3))
+        bm.edges.new((v1, v2))
+        bm.edges.new((v1, v3))
 
         base2 = d2_loc - x_axis * arrow_size
         v4 = bm.verts.new(d2_loc)
         v5 = bm.verts.new(base2 + y_axis * a_width)
         v6 = bm.verts.new(base2 - y_axis * a_width)
-        bm.faces.new((v4, v5, v6))
+        bm.edges.new((v4, v5))
+        bm.edges.new((v4, v6))
 
     bm.to_mesh(mesh)
     bm.free()
@@ -966,8 +968,8 @@ class OT_SketchupProDim(bpy.types.Operator):
             p2_2 = view3d_utils.location_3d_to_region_2d(region, rv3d, base2 + y_axis * a_width)
             p2_3 = view3d_utils.location_3d_to_region_2d(region, rv3d, base2 - y_axis * a_width)
             if all((p1_1, p1_2, p1_3, p2_1, p2_2, p2_3)):
-                arrow_pos_2d.extend([p1_1, p1_2, p1_3, p2_1, p2_2, p2_3])
-                arrow_batch = batch_for_shader(SHADER, 'TRIS', {"pos": arrow_pos_2d})
+                arrow_pos_2d.extend([p1_1, p1_2, p1_1, p1_3, p2_1, p2_2, p2_1, p2_3])
+                arrow_batch = batch_for_shader(SHADER, 'LINES', {"pos": arrow_pos_2d})
 
         if arrow_batch:
             SHADER.bind()
@@ -1133,6 +1135,7 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
 
 
 
