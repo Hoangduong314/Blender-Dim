@@ -14,6 +14,7 @@ import math
 import uuid
 
 import bmesh
+import mathutils.geometry
 import bpy
 import gpu
 import mathutils
@@ -709,6 +710,97 @@ class OT_SketchupProDim(bpy.types.Operator):
 
         return candidate_loc - axis_vec * delta.dot(axis_vec)
 
+    def get_snap_settings(self, context):
+        tool_settings = context.scene.tool_settings
+        return tool_settings.use_snap, set(tool_settings.snap_elements)
+
+    def closest_point_on_segment_2d(self, point, a, b):
+        ab = b - a
+        length_sq = ab.length_squared
+        if length_sq == 0.0:
+            return a.copy(), 0.0
+        t = max(0.0, min(1.0, (point - a).dot(ab) / length_sq))
+        return a + ab * t, t
+
+    def get_vertex_snap_candidate(self, region, rv3d, poly, mat, mesh, mouse_2d, threshold):
+        best = None
+        best_dist = threshold
+        for v_idx in poly.vertices:
+            v_world = mat @ mesh.vertices[v_idx].co
+            v_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v_world)
+            if not v_2d:
+                continue
+            dist_2d = (v_2d - mouse_2d).length
+            if dist_2d < best_dist:
+                best = v_world
+                best_dist = dist_2d
+        return best, best_dist
+
+    def get_edge_snap_candidate(self, region, rv3d, poly, mat, mesh, mouse_2d, threshold):
+        best = None
+        best_dist = threshold
+        for edge_key in poly.edge_keys:
+            v1_world = mat @ mesh.vertices[edge_key[0]].co
+            v2_world = mat @ mesh.vertices[edge_key[1]].co
+            v1_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v1_world)
+            v2_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v2_world)
+            if not v1_2d or not v2_2d:
+                continue
+            closest_2d, factor = self.closest_point_on_segment_2d(mouse_2d, v1_2d, v2_2d)
+            dist_2d = (closest_2d - mouse_2d).length
+            if dist_2d < best_dist:
+                best = v1_world.lerp(v2_world, factor)
+                best_dist = dist_2d
+        return best, best_dist
+
+    def get_raw_snap_location(self, context, event):
+        scene = context.scene
+        region = context.region
+        rv3d = context.space_data.region_3d
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        mouse_2d = Vector(coord)
+        view_vec = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+        result, location, _norm, idx, obj, mat = scene.ray_cast(context.view_layer.depsgraph, ray_origin, view_vec)
+
+        if not result:
+            return None
+
+        use_snap, snap_elements = self.get_snap_settings(context)
+        if not obj or obj.type != 'MESH':
+            return location
+
+        mesh = obj.data
+        poly = mesh.polygons[idx]
+        threshold = 30.0
+
+        if not use_snap or not snap_elements:
+            vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, poly, mat, mesh, mouse_2d, threshold)
+            return vertex_loc if vertex_loc is not None and vertex_dist < threshold else location
+
+        best_loc = None
+        best_dist = threshold
+
+        if 'VERTEX' in snap_elements:
+            vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, poly, mat, mesh, mouse_2d, threshold)
+            if vertex_loc is not None and vertex_dist < best_dist:
+                best_loc = vertex_loc
+                best_dist = vertex_dist
+
+        if 'EDGE' in snap_elements or 'EDGE_MIDPOINT' in snap_elements:
+            edge_loc, edge_dist = self.get_edge_snap_candidate(region, rv3d, poly, mat, mesh, mouse_2d, threshold)
+            if edge_loc is not None and edge_dist < best_dist:
+                best_loc = edge_loc
+                best_dist = edge_dist
+
+        if best_loc is not None:
+            return best_loc
+
+        if 'FACE' in snap_elements or 'FACE_NEAREST' in snap_elements:
+            return location
+
+        return location
+
     def update_proxy_text(self, context):
         preview_text = bpy.data.objects.get("Preview_Dim_Text")
         if not preview_text:
@@ -778,7 +870,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         if event.type == 'MOUSEMOVE':
             self.mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
             if cls_data['step'] < 2:
-                raw_loc = self.get_snap_location(context, event)
+                raw_loc = self.get_raw_snap_location(context, event)
                 cls_data['snap_loc_raw'] = raw_loc
                 cls_data['snap_loc'] = self.apply_p2_constraint(raw_loc) if cls_data['step'] == 1 else raw_loc
             elif cls_data['step'] == 2:
@@ -810,35 +902,6 @@ class OT_SketchupProDim(bpy.types.Operator):
             return {'CANCELLED'}
 
         return {'RUNNING_MODAL'}
-
-    def get_snap_location(self, context, event):
-        scene = context.scene
-        region = context.region
-        rv3d = context.space_data.region_3d
-        coord = (event.mouse_region_x, event.mouse_region_y)
-        view_vec = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
-        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
-        result, location, _norm, idx, obj, mat = scene.ray_cast(context.view_layer.depsgraph, ray_origin, view_vec)
-
-        if not result:
-            return None
-        if obj and obj.type == 'MESH':
-            mesh = obj.data
-            poly = mesh.polygons[idx]
-            min_dist_2d = 9999
-            closest_v_world = location
-            mouse_2d = Vector(coord)
-            for v_idx in poly.vertices:
-                v_world = mat @ mesh.vertices[v_idx].co
-                v_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, v_world)
-                if v_2d:
-                    dist_2d = (v_2d - mouse_2d).length
-                    if dist_2d < 30 and dist_2d < min_dist_2d:
-                        min_dist_2d = dist_2d
-                        closest_v_world = v_world
-            if min_dist_2d < 30:
-                return closest_v_world
-        return location
 
     def calculate_combined_offset(self, context):
         cls_data = self.__class__.data
@@ -1088,6 +1151,7 @@ class VIEW3D_PT_ProDim(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
+        tool_settings = scene.tool_settings
         style = maybe_get_active_style(scene)
 
         if OT_SketchupProDim._is_running:
@@ -1101,6 +1165,12 @@ class VIEW3D_PT_ProDim(bpy.types.Panel):
             layout.label(text="Style data is not initialized yet.", icon='INFO')
             layout.operator("view3d.dim_style_add", text="Create Default Style", icon='ADD')
             return
+
+        snap_box = layout.box()
+        snap_box.label(text="Blender Snap:")
+        snap_box.prop(tool_settings, "use_snap", text="Use Snap")
+        if tool_settings.use_snap:
+            snap_box.prop(tool_settings, "snap_elements", text="Snap To")
 
         style_box = layout.box()
         style_box.label(text="Style Library:")
