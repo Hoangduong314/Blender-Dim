@@ -1035,8 +1035,12 @@ class OT_SketchupProDim(bpy.types.Operator):
         region = context.region
         rv3d = context.space_data.region_3d
 
-        if step < 2 and cls_data['snap_loc']:
-            snap_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, cls_data['snap_loc'])
+        marker_loc = cls_data['snap_loc']
+        if step == 1 and cls_data.get('p2_constraint') and cls_data.get('snap_loc_raw') is not None:
+            marker_loc = cls_data['snap_loc_raw']
+
+        if step < 2 and marker_loc:
+            snap_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, marker_loc)
             if snap_2d:
                 size = 6
                 batch = batch_for_shader(
