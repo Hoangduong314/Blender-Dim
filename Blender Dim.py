@@ -1151,7 +1151,6 @@ class VIEW3D_PT_ProDim(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-        tool_settings = scene.tool_settings
         style = maybe_get_active_style(scene)
 
         if OT_SketchupProDim._is_running:
@@ -1165,12 +1164,6 @@ class VIEW3D_PT_ProDim(bpy.types.Panel):
             layout.label(text="Style data is not initialized yet.", icon='INFO')
             layout.operator("view3d.dim_style_add", text="Create Default Style", icon='ADD')
             return
-
-        snap_box = layout.box()
-        snap_box.label(text="Blender Snap:")
-        snap_box.prop(tool_settings, "use_snap", text="Use Snap")
-        if tool_settings.use_snap:
-            snap_box.prop(tool_settings, "snap_elements", text="Snap To")
 
         style_box = layout.box()
         style_box.label(text="Style Library:")
