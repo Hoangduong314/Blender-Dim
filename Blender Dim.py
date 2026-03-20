@@ -3,7 +3,7 @@ bl_info = {
     "author": "Pro CAD User",
     "version": (1, 2),
     "blender": (3, 0, 0),
-    "location": "View3D > UI (N Panel) > Tool > Pro Dim",
+    "location": "View3D > UI (N Panel) > Pro Dim",
     "description": "Cong cu do kich thuoc 3D chuyen nghiep chuan CAD/Sketchup",
     "warning": "",
     "doc_url": "",
@@ -104,6 +104,18 @@ def ensure_default_style(scene):
     if scene.dim_active_style_index >= len(styles):
         scene.dim_active_style_index = len(styles) - 1
 
+    return styles[scene.dim_active_style_index]
+
+
+def maybe_get_active_style(scene):
+    styles = scene.dim_styles
+    if not styles:
+        return None
+
+    if scene.dim_active_style_index < 0:
+        return styles[0]
+    if scene.dim_active_style_index >= len(styles):
+        return styles[-1]
     return styles[scene.dim_active_style_index]
 
 
@@ -1012,13 +1024,25 @@ class OT_SketchupProDim(bpy.types.Operator):
 class VIEW3D_PT_ProDim(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Tool'
+    bl_category = 'Pro Dim'
     bl_label = 'Pro Dim'
 
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-        style = get_active_style(scene)
+        style = maybe_get_active_style(scene)
+
+        if OT_SketchupProDim._is_running:
+            layout.label(text="Follow Header. ESC to exit", icon='INFO')
+        else:
+            layout.operator("view3d.sketchup_pro_dim", text="Start Dimming", icon='DRIVER_DISTANCE')
+
+        layout.separator()
+
+        if style is None:
+            layout.label(text="Style data is not initialized yet.", icon='INFO')
+            layout.operator("view3d.dim_style_add", text="Create Default Style", icon='ADD')
+            return
 
         style_box = layout.box()
         style_box.label(text="Style Library:")
@@ -1062,11 +1086,7 @@ class VIEW3D_PT_ProDim(bpy.types.Panel):
         visual_box.prop(style, "dim_text_color", text="Text Color")
         visual_box.prop(style, "dim_brightness", text="Emission Strength")
 
-        layout.separator()
-        if OT_SketchupProDim._is_running:
-            layout.label(text="Follow Header. ESC to exit", icon='INFO')
-        else:
-            layout.operator("view3d.sketchup_pro_dim", text="Start Dimming", icon='DRIVER_DISTANCE')
+
 
 
 classes = (
@@ -1086,6 +1106,9 @@ def register():
 
     bpy.types.Scene.dim_styles = bpy.props.CollectionProperty(type=DimStyleItem)
     bpy.types.Scene.dim_active_style_index = bpy.props.IntProperty(name="Active Style Index", default=0)
+
+    for scene in bpy.data.scenes:
+        ensure_default_style(scene)
 
     if not bpy.app.timers.is_registered(auto_cleanup_dim_data):
         bpy.app.timers.register(auto_cleanup_dim_data)
@@ -1110,3 +1133,6 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
+
+
