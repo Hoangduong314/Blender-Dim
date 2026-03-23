@@ -247,6 +247,15 @@ def get_style_materials(style):
     }
 
 
+def set_viewport_display_color(obj, color):
+    if obj is None or not hasattr(obj, "color"):
+        return
+    rgba = tuple(color)
+    if len(rgba) == 3:
+        rgba = (rgba[0], rgba[1], rgba[2], 1.0)
+    obj.color = rgba
+
+
 def set_object_material(obj, material):
     if obj.data is None:
         return
@@ -323,6 +332,7 @@ def apply_dimension_style(instance_obj, scene):
     style = get_style_for_dim(scene, instance_obj)
     materials = get_style_materials(style)
     custom_font = get_or_load_font(style.dim_font_path)
+    viewport_color = tuple(style.dim_text_color)
 
     p1 = Vector(instance_obj["p1"])
     p2 = Vector(instance_obj["p2"])
@@ -372,14 +382,17 @@ def apply_dimension_style(instance_obj, scene):
             child.data.vertices[3].co = d2_ext_loc
             child.data.update()
             set_object_material(child, materials["ext"])
+            set_viewport_display_color(child, viewport_color)
         elif "Dimension_Line" in child.name and child.type == 'MESH':
             child.data.vertices[0].co = d1_loc
             child.data.vertices[1].co = d2_loc
             child.data.update()
             set_object_material(child, materials["dim"])
+            set_viewport_display_color(child, viewport_color)
         elif "Dimension_Arrows" in child.name and child.type == 'MESH':
             build_arrow_mesh(child.data, style.dim_arrow_style, d1_loc, d2_loc, x_axis, y_axis, arrow_size)
             set_object_material(child, materials["dim"])
+            set_viewport_display_color(child, viewport_color)
         elif "Dimension_Text" in child.name and child.type == 'FONT':
             child.data.body = text_str
             child.data.size = t_size
@@ -389,6 +402,7 @@ def apply_dimension_style(instance_obj, scene):
                 child.data.font = custom_font
             child.location = ((d1_loc + d2_loc) / 2) + y_axis * t_gap + z_axis * max(dist_raw * 0.002, 0.001)
             set_object_material(child, materials["text"])
+            set_viewport_display_color(child, viewport_color)
 
     instance_obj.name = f"Dim_{text_str}"
 
@@ -427,6 +441,8 @@ def create_real_dimension(data, context):
     custom_font = get_or_load_font(style.dim_font_path)
     materials = get_style_materials(style)
 
+    viewport_color = tuple(style.dim_text_color)
+
     dist_raw = (p1 - p2).length
     text_str = get_formatted_text(dist_raw, scene, style)
 
@@ -452,12 +468,14 @@ def create_real_dimension(data, context):
     obj_ext = bpy.data.objects.new("Extension_Lines", mesh_ext)
     col_data.objects.link(obj_ext)
     set_object_material(obj_ext, materials["ext"])
+    set_viewport_display_color(obj_ext, viewport_color)
 
     mesh_dim = bpy.data.meshes.new("Dimension_Mesh")
     mesh_dim.from_pydata([d1_loc, d2_loc], [(0, 1)], [])
     obj_dim = bpy.data.objects.new("Dimension_Line", mesh_dim)
     col_data.objects.link(obj_dim)
     set_object_material(obj_dim, materials["dim"])
+    set_viewport_display_color(obj_dim, viewport_color)
     x_line = (p2 - p1).normalized()
     v_normal = x_line.cross(offset_dir).normalized()
 
@@ -477,6 +495,7 @@ def create_real_dimension(data, context):
     obj_arrows = bpy.data.objects.new("Dimension_Arrows", mesh_arrows)
     col_data.objects.link(obj_arrows)
     set_object_material(obj_arrows, materials["dim"])
+    set_viewport_display_color(obj_arrows, viewport_color)
 
     font_data = bpy.data.curves.new(name="DimText_Data", type='FONT')
     font_data.body = text_str
@@ -489,6 +508,7 @@ def create_real_dimension(data, context):
     obj_text = bpy.data.objects.new("Dimension_Text", font_data)
     col_data.objects.link(obj_text)
     set_object_material(obj_text, materials["text"])
+    set_viewport_display_color(obj_text, viewport_color)
 
     mid_point_loc = (d1_loc + d2_loc) / 2
     obj_text.location = mid_point_loc + y_axis * t_gap + z_axis * max(dist_raw * 0.002, 0.001)
@@ -500,6 +520,7 @@ def create_real_dimension(data, context):
     instance_obj.instance_collection = col_data
     instance_obj.location = p1
     instance_obj.empty_display_size = 0.0
+    set_viewport_display_color(instance_obj, viewport_color)
 
     instance_obj["is_dim_instance"] = True
     instance_obj["p1"] = p1
@@ -1399,6 +1420,7 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
 
 
 
