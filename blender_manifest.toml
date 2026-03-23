@@ -14,7 +14,7 @@ blender_version_min = "4.2.0"
 license = ["SPDX:GPL-3.0-or-later"]
 
 # This is a platform-independent add-on.
-platforms = []
+platforms = ["windows-x64", "windows-arm64", "macos-arm64", "macos-x64", "linux-x64"]
 
 # Tags for filtering on the extensions platform.
 tags = ["3D View", "Modeling"]
