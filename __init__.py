@@ -4,7 +4,7 @@ bl_info = {
     "version": (1, 2),
     "blender": (3, 0, 0),
     "location": "View3D > UI (N Panel) > Pro Dim",
-    "description": "Cong cu do kich thuoc 3D chuyen nghiep chuan CAD/Sketchup",
+    "description": "A professional 3D dimensioning tool for Blender, inspired by CAD and SketchUp. Create precise, customizable, and styleable dimension lines for your models. Features include snapping, real-time previews, and a style library to manage different looks.",
     "warning": "",
     "doc_url": "",
     "category": "3D View",

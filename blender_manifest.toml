@@ -1,0 +1,21 @@
+# TOML file for the Pro 3D Dimension Tool Blender extension.
+# See https://wiki.blender.org/wiki/Process/Extensions_Platform for details.
+
+schema_version = "1.0.0"
+id = "pro-3d-dimension-tool"
+version = "1.2.0"
+name = "Pro 3D Dimension Tool"
+tagline = "Professional 3D dimensioning tool for Blender"
+description = """Create precise, customizable, and styleable dimension lines for your models. Features include snapping, real-time previews, and a style library to manage different looks."""
+maintainer = "Pro CAD User"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+# This is a platform-independent add-on.
+platforms = []
+
+# Tags for filtering on the extensions platform.
+tags = ["3D View", "Modeling"]
+
