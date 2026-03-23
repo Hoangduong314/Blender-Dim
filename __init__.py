@@ -294,6 +294,26 @@ def remove_preview_text():
         bpy.data.curves.remove(font_data)
 
 
+def remove_dimension_instance(instance_obj):
+    if instance_obj is None:
+        return
+
+    col_data = instance_obj.instance_collection
+    bpy.data.objects.remove(instance_obj, do_unlink=True)
+
+    if col_data and col_data.users == 0:
+        for obj in list(col_data.objects):
+            data = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if not data:
+                continue
+            if data.__class__.__name__ == 'Mesh':
+                bpy.data.meshes.remove(data)
+            elif data.__class__.__name__ == 'TextCurve':
+                bpy.data.curves.remove(data)
+        bpy.data.collections.remove(col_data)
+
+
 def build_arrow_mesh(mesh, arrow_style, d1_loc, d2_loc, x_axis, y_axis, arrow_size):
     if hasattr(mesh, "clear_geometry"):
         mesh.clear_geometry()
@@ -426,7 +446,7 @@ def get_or_create_main_collection(scene):
 
 def create_real_dimension(data, context):
     scene = context.scene
-    style = get_active_style(scene)
+    style = get_style_by_id(scene, data.get('style_id'))
 
     p1, p2, d1, d2 = data['p1'], data['p2'], data['d1'], data['d2']
     offset_dir = data['offset_dir'].normalized()
@@ -683,11 +703,17 @@ class OT_SketchupProDim(bpy.types.Operator):
         'd1': None,
         'd2': None,
         'offset_dir': None,
+        'offset_dist': None,
         'snap_color': (1.0, 0.0, 0.0, 1.0),
         'p2_constraint': None,
         'snap_cache': None,
         'dim_line_snap_cache': None,
         'offset_snap_point': None,
+        'chain_mode': False,
+        'chain_style_id': None,
+        'chain_offset_dir': None,
+        'chain_offset_dist': None,
+        'chain_line_dir': None,
     }
 
     @classmethod
@@ -709,14 +735,156 @@ class OT_SketchupProDim(bpy.types.Operator):
         return f"Axis {axis}" if mode == 'AXIS' else f"Plane !{axis}"
 
     def update_step_header(self, context):
-        step = self.__class__.data['step']
+        cls_data = self.__class__.data
+        step = cls_data['step']
         if step == 0:
             context.area.header_text_set("Step 1: Pick Start Point")
         elif step == 1:
             label = self.get_constraint_label()
-            context.area.header_text_set(f"Step 2: Pick End Point | Constraint: {label} | X/Y/Z = Axis, Shift+X/Y/Z = Plane")
+            if cls_data.get('chain_mode'):
+                context.area.header_text_set(f"Chain: Pick Next Point | Constraint: {label} | X/Y/Z = Axis, Shift+X/Y/Z = Plane | ESC = Exit")
+            else:
+                context.area.header_text_set(f"Step 2: Pick End Point | Constraint: {label} | X/Y/Z = Axis, Shift+X/Y/Z = Plane")
         elif step == 2:
             context.area.header_text_set("Step 3: Move to set Direction & Distance. Click to finish.")
+
+    def reset_preview_geometry(self):
+        cls_data = self.__class__.data
+        cls_data['p2'] = None
+        cls_data['d1'] = None
+        cls_data['d2'] = None
+        cls_data['offset_dist'] = None
+        cls_data['offset_snap_point'] = None
+
+    def get_chain_projected_point(self, base_point, candidate_point):
+        cls_data = self.__class__.data
+        line_dir = cls_data.get('chain_line_dir')
+        if base_point is None or candidate_point is None or line_dir is None:
+            return candidate_point
+
+        line_dir = line_dir.normalized()
+        return base_point + line_dir * (candidate_point - base_point).dot(line_dir)
+
+    def begin_chain_mode(self, context, anchor_point, style_id, offset_dir, offset_dist, line_dir=None):
+        cls_data = self.__class__.data
+        cls_data['chain_mode'] = True
+        cls_data['chain_style_id'] = style_id
+        cls_data['chain_offset_dir'] = offset_dir.normalized().copy()
+        cls_data['chain_offset_dist'] = offset_dist
+        if line_dir is not None and line_dir.length > 0.0001:
+            cls_data['chain_line_dir'] = line_dir.normalized().copy()
+        cls_data['step'] = 1
+        cls_data['p1'] = anchor_point.copy()
+        cls_data['snap_loc'] = None
+        cls_data['snap_loc_raw'] = None
+        cls_data['p2_constraint'] = None
+        self.reset_preview_geometry()
+        self.update_step_header(context)
+
+    def refresh_chain_preview(self, context):
+        cls_data = self.__class__.data
+        p1 = cls_data.get('p1')
+        p2 = self.get_chain_projected_point(p1, cls_data.get('snap_loc'))
+        offset_dir = cls_data.get('chain_offset_dir')
+        offset_dist = cls_data.get('chain_offset_dist')
+
+        self.reset_preview_geometry()
+        if p1 is None or p2 is None or offset_dir is None or offset_dist is None:
+            return
+        if (p2 - p1).length <= 0.0001:
+            return
+
+        style = get_style_by_id(context.scene, cls_data.get('chain_style_id'))
+        cls_data['p2'] = p2.copy()
+        cls_data['offset_dir'] = offset_dir.copy()
+        cls_data['snap_color'] = tuple(style.dim_text_color)
+        cls_data['d1'] = p1 + offset_dir * offset_dist
+        cls_data['d2'] = p2 + offset_dir * offset_dist
+
+    def build_dimension_payload(self, p1, p2, offset_dir, offset_dist, style_id):
+        return {
+            'p1': p1.copy(),
+            'p2': p2.copy(),
+            'd1': p1 + offset_dir * offset_dist,
+            'd2': p2 + offset_dir * offset_dist,
+            'offset_dir': offset_dir.copy(),
+            'style_id': style_id,
+        }
+
+    def get_dimension_split_candidate(self, context, point):
+        cls_data = self.__class__.data
+        chain_offset_dir = cls_data.get('chain_offset_dir')
+        chain_offset_dist = cls_data.get('chain_offset_dist')
+        chain_style_id = cls_data.get('chain_style_id')
+        if point is None or chain_offset_dir is None or chain_offset_dist is None:
+            return None
+
+        best_obj = None
+        best_dist = None
+        tolerance = 0.001
+        endpoint_margin = 0.001
+        chain_offset_dir = chain_offset_dir.normalized()
+
+        for obj in context.visible_objects:
+            if obj.hide_get() or not obj.get("is_dim_instance"):
+                continue
+            if obj.get("style_id") != chain_style_id:
+                continue
+
+            p1 = obj.get("p1")
+            p2 = obj.get("p2")
+            offset_dir = obj.get("offset_dir")
+            offset_dist = obj.get("offset_dist")
+            if p1 is None or p2 is None or offset_dir is None or offset_dist is None:
+                continue
+
+            p1 = Vector(p1)
+            p2 = Vector(p2)
+            offset_dir = Vector(offset_dir)
+            if offset_dir.length <= 0.0001 or (p2 - p1).length <= 0.0001:
+                continue
+
+            offset_dir.normalize()
+            if abs(offset_dir.dot(chain_offset_dir)) < 0.9999:
+                continue
+            if abs(offset_dist - chain_offset_dist) > tolerance:
+                continue
+
+            segment = p2 - p1
+            factor = (point - p1).dot(segment) / segment.length_squared
+            if factor <= 0.0 or factor >= 1.0:
+                continue
+
+            closest = p1.lerp(p2, factor)
+            dist = (closest - point).length
+            margin = min(endpoint_margin, segment.length * 0.25)
+            if dist > tolerance:
+                continue
+            if (point - p1).length <= margin or (point - p2).length <= margin:
+                continue
+
+            if best_dist is None or dist < best_dist:
+                best_obj = obj
+                best_dist = dist
+
+        return best_obj
+
+    def try_split_dimension(self, context, point):
+        split_obj = self.get_dimension_split_candidate(context, point)
+        if split_obj is None:
+            return False
+
+        p1 = Vector(split_obj["p1"])
+        p2 = Vector(split_obj["p2"])
+        offset_dir = Vector(split_obj["offset_dir"]).normalized()
+        offset_dist = split_obj["offset_dist"]
+        style_id = split_obj.get("style_id")
+
+        remove_dimension_instance(split_obj)
+        create_real_dimension(self.build_dimension_payload(p1, point, offset_dir, offset_dist, style_id), context)
+        create_real_dimension(self.build_dimension_payload(point, p2, offset_dir, offset_dist, style_id), context)
+        self.clear_snap_cache()
+        return True
 
     def apply_p2_constraint(self, candidate_loc):
         cls_data = self.__class__.data
@@ -938,12 +1106,12 @@ class OT_SketchupProDim(bpy.types.Operator):
             return
 
         cls_data = self.__class__.data
-        if cls_data['step'] != 2 or not cls_data['d1']:
+        if (cls_data['step'] != 2 and not cls_data.get('chain_mode')) or not cls_data['d1']:
             preview_text.hide_viewport = True
             return
 
         scene = context.scene
-        style = get_active_style(scene)
+        style = get_style_by_id(scene, cls_data.get('chain_style_id')) if cls_data.get('chain_mode') else get_active_style(scene)
         p1, p2 = cls_data['p1'], cls_data['p2']
         dist = (p1 - p2).length
         scale_x = style.dim_scale_x
@@ -957,7 +1125,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         preview_text.data.align_y = 'BOTTOM'
         if custom_font:
             preview_text.data.font = custom_font
-        set_object_material(preview_text, get_preview_material(scene))
+        set_object_material(preview_text, get_style_materials(style)["preview"])
 
         x_line = (p2 - p1).normalized()
         offset_dir = cls_data['offset_dir'].normalized()
@@ -994,6 +1162,9 @@ class OT_SketchupProDim(bpy.types.Operator):
             cls_data['p2_constraint'] = None if cls_data.get('p2_constraint') == new_constraint else new_constraint
             if cls_data.get('snap_loc_raw') is not None:
                 cls_data['snap_loc'] = self.apply_p2_constraint(cls_data['snap_loc_raw'])
+                if cls_data.get('chain_mode'):
+                    self.refresh_chain_preview(context)
+                    self.update_proxy_text(context)
             self.update_step_header(context)
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
@@ -1004,6 +1175,9 @@ class OT_SketchupProDim(bpy.types.Operator):
                 raw_loc = self.get_raw_snap_location(context, event)
                 cls_data['snap_loc_raw'] = raw_loc
                 cls_data['snap_loc'] = self.apply_p2_constraint(raw_loc) if cls_data['step'] == 1 else raw_loc
+                if cls_data.get('chain_mode') and cls_data['step'] == 1:
+                    self.refresh_chain_preview(context)
+                    self.update_proxy_text(context)
             elif cls_data['step'] == 2:
                 self.calculate_combined_offset(context)
                 self.update_proxy_text(context)
@@ -1017,6 +1191,36 @@ class OT_SketchupProDim(bpy.types.Operator):
                 self.update_step_header(context)
 
             elif cls_data['step'] == 1 and cls_data['snap_loc']:
+                if cls_data.get('chain_mode'):
+                    next_point = self.get_chain_projected_point(cls_data['p1'], cls_data['snap_loc'])
+                    if (next_point - cls_data['p1']).length <= 0.0001:
+                        return {'RUNNING_MODAL'}
+
+                    if not self.try_split_dimension(context, next_point):
+                        create_real_dimension(
+                            self.build_dimension_payload(
+                                cls_data['p1'],
+                                next_point,
+                                cls_data['chain_offset_dir'],
+                                cls_data['chain_offset_dist'],
+                                cls_data['chain_style_id'],
+                            ),
+                            context,
+                        )
+                        self.clear_snap_cache()
+
+                    self.begin_chain_mode(
+                        context,
+                        next_point,
+                        cls_data['chain_style_id'],
+                        cls_data['chain_offset_dir'],
+                        cls_data['chain_offset_dist'],
+                        cls_data.get('chain_line_dir'),
+                    )
+                    self.update_proxy_text(context)
+                    context.area.tag_redraw()
+                    return {'RUNNING_MODAL'}
+
                 cls_data['p2'] = cls_data['snap_loc'].copy()
                 cls_data['step'] = 2
                 self.update_step_header(context)
@@ -1024,9 +1228,20 @@ class OT_SketchupProDim(bpy.types.Operator):
                 self.update_proxy_text(context)
 
             elif cls_data['step'] == 2:
-                create_real_dimension(cls_data, context)
-                self.stop_ui(context)
-                return {'FINISHED'}
+                style_id = get_active_style(context.scene).style_id
+                create_real_dimension({**cls_data, 'style_id': style_id}, context)
+                self.clear_snap_cache()
+                self.begin_chain_mode(
+                    context,
+                    cls_data['p2'],
+                    style_id,
+                    cls_data['offset_dir'],
+                    cls_data['offset_dist'],
+                    (cls_data['p2'] - cls_data['p1']).normalized(),
+                )
+                self.update_proxy_text(context)
+                context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
 
         elif event.type in {'RIGHTMOUSE', 'ESC'}:
             self.stop_ui(context)
@@ -1113,6 +1328,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             snap_color = offset_snap_color
 
         cls_data['offset_dir'] = best_dir
+        cls_data['offset_dist'] = final_dist
         cls_data['snap_color'] = snap_color
         cls_data['offset_snap_point'] = offset_snap_point
         cls_data['d1'] = p1 + best_dir * final_dist
@@ -1175,10 +1391,10 @@ class OT_SketchupProDim(bpy.types.Operator):
                 SHADER.uniform_float("color", (1.0, 0.75, 0.2, 1.0))
                 batch.draw(SHADER)
 
-        if step != 2 or not cls_data['d1'] or not cls_data['d2']:
+        if (step != 2 and not cls_data.get('chain_mode')) or not cls_data['d1'] or not cls_data['d2']:
             return
 
-        style = get_active_style(context.scene)
+        style = get_style_by_id(context.scene, cls_data.get('chain_style_id')) if cls_data.get('chain_mode') else get_active_style(context.scene)
         scale_x = style.dim_scale_x
         overshoot = (style.dim_ext_overshoot_mm / 1000.0) * scale_x
         fixed_len = (style.dim_ext_fixed_len_mm / 1000.0) * scale_x
@@ -1275,12 +1491,18 @@ class OT_SketchupProDim(bpy.types.Operator):
             'd1': None,
             'd2': None,
             'offset_dir': None,
+            'offset_dist': None,
             'snap_color': tuple(active_style.dim_text_color),
             'p2_constraint': None,
             'snap_cache': None,
             'dim_line_snap_cache': None,
             'offset_snap_point': None,
-    }
+            'chain_mode': False,
+            'chain_style_id': None,
+            'chain_offset_dir': None,
+            'chain_offset_dist': None,
+            'chain_line_dir': None,
+        }
 
         remove_preview_text()
         preview_font = bpy.data.curves.new(name="Preview_Dim_Font", type='FONT')
