@@ -665,6 +665,8 @@ class OT_SketchupProDim(bpy.types.Operator):
         'snap_color': (1.0, 0.0, 0.0, 1.0),
         'p2_constraint': None,
         'snap_cache': None,
+        'dim_line_snap_cache': None,
+        'offset_snap_point': None,
     }
 
     @classmethod
@@ -752,6 +754,44 @@ class OT_SketchupProDim(bpy.types.Operator):
 
     def clear_snap_cache(self):
         self.__class__.data['snap_cache'] = None
+        self.__class__.data['dim_line_snap_cache'] = None
+
+    def ensure_dim_line_snap_cache(self, context):
+        cls_data = self.__class__.data
+        if cls_data.get('dim_line_snap_cache') is not None:
+            return cls_data['dim_line_snap_cache']
+
+        dim_line_cache = []
+        for obj in context.visible_objects:
+            if obj.hide_get() or not obj.get("is_dim_instance"):
+                continue
+
+            p1 = obj.get("p1")
+            p2 = obj.get("p2")
+            offset_dir = obj.get("offset_dir")
+            offset_dist = obj.get("offset_dist")
+            if p1 is None or p2 is None or offset_dir is None or offset_dist is None:
+                continue
+
+            p1 = Vector(p1)
+            p2 = Vector(p2)
+            offset_dir = Vector(offset_dir)
+            if offset_dir.length <= 0.0001:
+                continue
+
+            offset_dir.normalize()
+            d1 = p1 + offset_dir * offset_dist
+            d2 = p2 + offset_dir * offset_dist
+            if (d2 - d1).length <= 0.0001:
+                continue
+
+            dim_line_cache.append({
+                'd1': d1,
+                'd2': d2,
+            })
+
+        cls_data['dim_line_snap_cache'] = dim_line_cache
+        return dim_line_cache
 
     def closest_point_on_segment_2d(self, point, a, b):
         ab = b - a
@@ -815,6 +855,20 @@ class OT_SketchupProDim(bpy.types.Operator):
             return None
         return location
 
+    def get_dim_line_snap_candidate(self, region, rv3d, dim_line_cache, mouse_2d, threshold):
+        best_loc = None
+        best_dist = threshold
+        for entry in dim_line_cache:
+            d1_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, entry['d1'])
+            d2_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, entry['d2'])
+            if d1_2d is None or d2_2d is None:
+                continue
+            closest_2d, factor = self.closest_point_on_segment_2d(mouse_2d, d1_2d, d2_2d)
+            dist_2d = (closest_2d - mouse_2d).length
+            if dist_2d < best_dist:
+                best_loc = entry['d1'].lerp(entry['d2'], factor)
+                best_dist = dist_2d
+        return best_loc, best_dist
     def get_raw_snap_location(self, context, event):
         region = context.region
         rv3d = context.space_data.region_3d
@@ -987,6 +1041,17 @@ class OT_SketchupProDim(bpy.types.Operator):
         best_dir = free_dir
         snap_color = tuple(style.dim_text_color)
         final_dist = v_perp.length
+        offset_snap_point = None
+        offset_snap_color = (1.0, 0.75, 0.2, 1.0)
+
+        dim_line_cache = self.ensure_dim_line_snap_cache(context)
+        dim_snap_loc, _dim_snap_dist = self.get_dim_line_snap_candidate(
+            region,
+            rv3d,
+            dim_line_cache,
+            self.mouse_pos,
+            18.0,
+        )
 
         axes = {
             'X': (Vector((1, 0, 0)), (1.0, 0.2, 0.2, 1.0)),
@@ -1021,8 +1086,14 @@ class OT_SketchupProDim(bpy.types.Operator):
                     final_dist = (pt_intersect - p1).dot(best_dir)
                 break
 
+        if dim_snap_loc is not None:
+            final_dist = (dim_snap_loc - p1).dot(best_dir)
+            offset_snap_point = dim_snap_loc
+            snap_color = offset_snap_color
+
         cls_data['offset_dir'] = best_dir
         cls_data['snap_color'] = snap_color
+        cls_data['offset_snap_point'] = offset_snap_point
         cls_data['d1'] = p1 + best_dir * final_dist
         cls_data['d2'] = p2 + best_dir * final_dist
 
@@ -1069,6 +1140,19 @@ class OT_SketchupProDim(bpy.types.Operator):
                 SHADER.bind()
                 SHADER.uniform_float("color", color_map.get(constraint, (1.0, 1.0, 0.0, 1.0)))
                 guide.draw(SHADER)
+
+        if step == 2 and cls_data.get('offset_snap_point') is not None:
+            snap_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, cls_data['offset_snap_point'])
+            if snap_2d:
+                size = 7
+                batch = batch_for_shader(
+                    SHADER,
+                    'LINES',
+                    {"pos": [(snap_2d.x - size, snap_2d.y), (snap_2d.x + size, snap_2d.y), (snap_2d.x, snap_2d.y - size), (snap_2d.x, snap_2d.y + size)]},
+                )
+                SHADER.bind()
+                SHADER.uniform_float("color", (1.0, 0.75, 0.2, 1.0))
+                batch.draw(SHADER)
 
         if step != 2 or not cls_data['d1'] or not cls_data['d2']:
             return
@@ -1173,7 +1257,9 @@ class OT_SketchupProDim(bpy.types.Operator):
             'snap_color': tuple(active_style.dim_text_color),
             'p2_constraint': None,
             'snap_cache': None,
-        }
+            'dim_line_snap_cache': None,
+            'offset_snap_point': None,
+    }
 
         remove_preview_text()
         preview_font = bpy.data.curves.new(name="Preview_Dim_Font", type='FONT')
@@ -1313,6 +1399,8 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+
+
 
 
 
