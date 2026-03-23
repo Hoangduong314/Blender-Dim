@@ -1289,8 +1289,6 @@ def register():
     bpy.types.Scene.dim_styles = bpy.props.CollectionProperty(type=DimStyleItem)
     bpy.types.Scene.dim_active_style_index = bpy.props.IntProperty(name="Active Style Index", default=0)
 
-    for scene in bpy.data.scenes:
-        ensure_default_style(scene)
 
     if not bpy.app.timers.is_registered(auto_cleanup_dim_data):
         bpy.app.timers.register(auto_cleanup_dim_data)
