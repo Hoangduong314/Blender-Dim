@@ -419,7 +419,9 @@ def create_real_dimension(data, context, existing_instance=None):
 
     viewport_color = tuple(style.dim_text_color)
     
-    if linear_axis:
+    if 'force_x_axis' in data:
+        first_x_line = data['force_x_axis'].normalized()
+    elif linear_axis:
         first_x_line = linear_axis
     else:
         first_x_line = (points[1] - points[0]).normalized() if (points[1] - points[0]).length>0.0001 else Vector((1,0,0))
@@ -553,8 +555,11 @@ def create_real_dimension(data, context, existing_instance=None):
     elif "linear_axis" in instance_obj:
         del instance_obj["linear_axis"]
     instance_obj["points_json"] = json.dumps([[v.x, v.y, v.z] for v in points])
+    if 'anchors' in data and data['anchors']:
+        instance_obj["anchors_json"] = json.dumps(data['anchors'])
     instance_obj["offset_dir"] = offset_dir
     instance_obj["offset_dist"] = offset_dist
+    instance_obj["X_axis"] = x_axis
     instance_obj["Y_axis"] = y_axis
     instance_obj["Z_axis"] = z_axis
     instance_obj["style_id"] = style.style_id

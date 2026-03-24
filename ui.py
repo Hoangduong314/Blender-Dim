@@ -44,6 +44,10 @@ class VIEW3D_PT_ProDim(bpy.types.Panel):
                 layout.operator("view3d.edit_witness_lines", text="Edit Witness Lines", icon='GREASEPENCIL')
                 layout.operator("view3d.edit_dim_line", text="Edit Dim Line", icon='DRIVER_TRANSFORM')
 
+            row = layout.row(align=True)
+            row.operator("view3d.update_dim_anchors", text="Update Selected Dims", icon='FILE_REFRESH').update_all = False
+            row.operator("view3d.update_dim_anchors", text="Update All Dims", icon='FILE_REFRESH').update_all = True
+            
         layout.separator()
 
         if style is None:

@@ -30,6 +30,7 @@ classes = (
     operators.OT_SketchupProDim,
     operators.OT_EditWitnessLines,
     operators.OT_EditDimLine,
+    operators.OT_UpdateDimAnchors,
     ui.VIEW3D_PT_ProDim,
 )
 

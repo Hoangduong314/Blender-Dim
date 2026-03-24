@@ -398,9 +398,13 @@ class OT_SketchupProDim(bpy.types.Operator):
                 continue
 
             world_matrix = obj_eval.matrix_world.copy()
-            verts = [world_matrix @ vert.co for vert in mesh.vertices]
+            verts_local = [vert.co.copy() for vert in mesh.vertices]
+            verts = [world_matrix @ v for v in verts_local]
             edges = [tuple(edge.vertices) for edge in mesh.edges]
             snap_cache.append({
+                'obj_name': obj.name,
+                'matrix_world': world_matrix,
+                'verts_local': verts_local,
                 'verts': verts,
                 'edges': edges,
             })
@@ -470,8 +474,9 @@ class OT_SketchupProDim(bpy.types.Operator):
     def get_vertex_snap_candidate(self, region, rv3d, snap_cache, mouse_2d, threshold):
         best_loc = None
         best_dist = threshold
+        best_anchor = None
         for entry in snap_cache:
-            for world_loc in entry['verts']:
+            for idx, world_loc in enumerate(entry['verts']):
                 screen_loc = view3d_utils.location_3d_to_region_2d(region, rv3d, world_loc)
                 if screen_loc is None:
                     continue
@@ -479,11 +484,18 @@ class OT_SketchupProDim(bpy.types.Operator):
                 if dist_2d < best_dist:
                     best_loc = world_loc.copy()
                     best_dist = dist_2d
-        return best_loc, best_dist
+                    best_anchor = {
+                        'obj': entry['obj_name'],
+                        'type': 'VERTEX',
+                        'index': idx,
+                        'local_loc': list(entry['verts_local'][idx])
+                    }
+        return best_loc, best_dist, best_anchor
 
     def get_edge_snap_candidate(self, region, rv3d, snap_cache, mouse_2d, threshold, midpoint_only=False):
         best_loc = None
         best_dist = threshold
+        best_anchor = None
         for entry in snap_cache:
             verts = entry['verts']
             for v1_idx, v2_idx in entry['edges']:
@@ -501,6 +513,14 @@ class OT_SketchupProDim(bpy.types.Operator):
                     if dist_2d < best_dist:
                         best_loc = midpoint_world
                         best_dist = dist_2d
+                        best_anchor = {
+                            'obj': entry['obj_name'],
+                            'type': 'EDGE',
+                            'v1': v1_idx,
+                            'v2': v2_idx,
+                            'factor': 0.5,
+                            'local_loc': list((entry['verts_local'][v1_idx] + entry['verts_local'][v2_idx]) * 0.5)
+                        }
                     continue
 
                 closest_2d, factor = self.closest_point_on_segment_2d(mouse_2d, v1_2d, v2_2d)
@@ -508,7 +528,15 @@ class OT_SketchupProDim(bpy.types.Operator):
                 if dist_2d < best_dist:
                     best_loc = v1_world.lerp(v2_world, factor)
                     best_dist = dist_2d
-        return best_loc, best_dist
+                    best_anchor = {
+                        'obj': entry['obj_name'],
+                        'type': 'EDGE',
+                        'v1': v1_idx,
+                        'v2': v2_idx,
+                        'factor': factor,
+                        'local_loc': list(entry['verts_local'][v1_idx].lerp(entry['verts_local'][v2_idx], factor))
+                    }
+        return best_loc, best_dist, best_anchor
 
     def get_face_snap_candidate(self, context, coord):
         scene = context.scene
@@ -546,44 +574,48 @@ class OT_SketchupProDim(bpy.types.Operator):
         
         def find_loc():
             if not use_snap or not snap_elements:
-                return face_loc, 'FACE'
+                return face_loc, 'FACE', None
 
             snap_cache = self.ensure_snap_cache(context)
             threshold = 18.0
             best_loc = None
             best_dist = threshold
             best_type = 'FACE'
+            best_anchor = None
 
             if 'VERTEX' in snap_elements:
-                vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
+                vertex_loc, vertex_dist, v_anchor = self.get_vertex_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
                 if vertex_loc is not None and vertex_dist < best_dist:
                     best_loc = vertex_loc
                     best_dist = vertex_dist
                     best_type = 'VERTEX'
+                    best_anchor = v_anchor
 
             if 'EDGE_MIDPOINT' in snap_elements:
-                midpoint_loc, midpoint_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold, midpoint_only=True)
+                midpoint_loc, midpoint_dist, m_anchor = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold, midpoint_only=True)
                 if midpoint_loc is not None and midpoint_dist < best_dist:
                     best_loc = midpoint_loc
                     best_dist = midpoint_dist
                     best_type = 'MIDPOINT'
+                    best_anchor = m_anchor
 
             if 'EDGE' in snap_elements:
-                edge_loc, edge_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
+                edge_loc, edge_dist, e_anchor = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
                 if edge_loc is not None and edge_dist < best_dist:
                     best_loc = edge_loc
                     best_dist = edge_dist
                     best_type = 'EDGE'
+                    best_anchor = e_anchor
 
             if best_loc is not None:
-                return best_loc, best_type
+                return best_loc, best_type, best_anchor
 
             if 'FACE' in snap_elements or 'FACE_NEAREST' in snap_elements:
-                return face_loc, 'FACE'
+                return face_loc, 'FACE', None
 
-            return face_loc, 'FACE'
+            return face_loc, 'FACE', None
 
-        raw_loc, snap_type = find_loc()
+        raw_loc, snap_type, anchor_out = find_loc()
 
         if raw_loc is not None and not rv3d.is_perspective:
             view_fwd = rv3d.view_rotation @ Vector((0, 0, -1))
@@ -591,14 +623,17 @@ class OT_SketchupProDim(bpy.types.Operator):
             if abs(view_fwd.x) > 0.99:
                 raw_loc = raw_loc.copy()
                 raw_loc.x = cursor_loc.x
+                if anchor_out: anchor_out['flatten'] = ('X', cursor_loc.x)
             elif abs(view_fwd.y) > 0.99:
                 raw_loc = raw_loc.copy()
                 raw_loc.y = cursor_loc.y
+                if anchor_out: anchor_out['flatten'] = ('Y', cursor_loc.y)
             elif abs(view_fwd.z) > 0.99:
                 raw_loc = raw_loc.copy()
                 raw_loc.z = cursor_loc.z
+                if anchor_out: anchor_out['flatten'] = ('Z', cursor_loc.z)
 
-        return raw_loc, snap_type
+        return raw_loc, snap_type, anchor_out
 
     def update_proxy_text(self, context):
         preview_text = bpy.data.objects.get("Preview_Dim_Text")
@@ -643,9 +678,10 @@ class OT_SketchupProDim(bpy.types.Operator):
         if event.type == 'MOUSEMOVE':
             self.mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
             if cls_data['step'] < 2:
-                raw_loc, snap_type = self.get_raw_snap_location(context, event)
+                raw_loc, snap_type, anchor_out = self.get_raw_snap_location(context, event)
                 cls_data['snap_loc_raw'] = raw_loc
                 cls_data['snap_type'] = snap_type
+                cls_data['current_anchor'] = anchor_out
                 cls_data['snap_loc'] = self.apply_p2_constraint(raw_loc) if cls_data['step'] == 1 else raw_loc
                 if cls_data.get('chain_mode') and cls_data['step'] == 1:
                     self.refresh_chain_preview(context)
@@ -658,6 +694,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         elif event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             if cls_data['step'] == 0 and cls_data['snap_loc']:
                 cls_data['p1'] = cls_data['snap_loc'].copy()
+                cls_data['anchor_p1'] = cls_data.get('current_anchor')
                 cls_data['step'] = 1
                 cls_data['snap_loc_raw'] = cls_data['snap_loc']
                 self.update_step_header(context)
@@ -679,6 +716,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                                     'offset_dist': cls_data['chain_offset_dist'],
                                     'style_id': cls_data['chain_style_id'],
                                     'linear_axis': cls_data.get('chain_linear_axis'),
+                                    'anchors': [cls_data.get('anchor_p1'), cls_data.get('anchor_p2', cls_data.get('current_anchor'))]
                                 }
                                 create_real_dimension(data, context, existing_instance=chain_inst)
                             else:
@@ -738,22 +776,31 @@ class OT_SketchupProDim(bpy.types.Operator):
                         import json
                         pts = [Vector(p) for p in json.loads(chain_inst["points_json"])]
                         pts.append(next_point)
+                        anchors = []
+                        if "anchors_json" in chain_inst:
+                            anchors = json.loads(chain_inst["anchors_json"])
+                        anchors.append(cls_data.get('current_anchor'))
                         data = {
                             'points': pts,
                             'offset_dir': cls_data['chain_offset_dir'],
                             'offset_dist': cls_data['chain_offset_dist'],
                             'style_id': cls_data['chain_style_id'],
                             'linear_axis': cls_data.get('chain_linear_axis'),
+                            'anchors': anchors
                         }
+                        if cls_data.get('force_x_axis'): data['force_x_axis'] = cls_data['force_x_axis']
                         create_real_dimension(data, context, existing_instance=chain_inst)
                     else:
-                        new_dim = create_real_dimension({
+                        data = {
                             'points': [cls_data['p1'], next_point],
                             'offset_dir': cls_data['chain_offset_dir'],
                             'offset_dist': cls_data['chain_offset_dist'],
                             'style_id': cls_data['chain_style_id'],
                             'linear_axis': cls_data.get('chain_linear_axis'),
-                        }, context)
+                            'anchors': [cls_data.get('anchor_p1'), cls_data.get('current_anchor')]
+                        }
+                        if cls_data.get('force_x_axis'): data['force_x_axis'] = cls_data['force_x_axis']
+                        new_dim = create_real_dimension(data, context)
                         cls_data['chain_instance'] = new_dim
                     self.begin_chain_mode(
                         context,
@@ -769,6 +816,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                     return {'RUNNING_MODAL'}
 
                 cls_data['p2'] = cls_data['snap_loc'].copy()
+                cls_data['anchor_p2'] = cls_data.get('current_anchor')
                 cls_data['step'] = 2
                 self.update_step_header(context)
                 self.calculate_combined_offset(context)
@@ -802,6 +850,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                     'offset_dist': cls_data['offset_dist'],
                     'style_id': style_id,
                     'linear_axis': cls_data.get('linear_axis'),
+                    'anchors': [cls_data.get('anchor_p1'), cls_data.get('anchor_p2')]
                 }, context)
                 cls_data['chain_instance'] = first_dim
                 cls_data['chain_linear_axis'] = cls_data.get('linear_axis')
@@ -847,6 +896,8 @@ class OT_SketchupProDim(bpy.types.Operator):
         linear_axis_name = cls_data.get('linear_axis')
         if linear_axis_name:
             v_line = axes[linear_axis_name][0]
+        elif cls_data.get('force_x_axis'):
+            v_line = cls_data['force_x_axis']
         else:
             v_line = (p2 - p1).normalized()
 
@@ -1073,7 +1124,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         if v_dir.length <= 0.0001:
             return
 
-        x_line = v_dir
+        x_line = cls_data.get('force_x_axis', v_dir)
         offset_dir_n = offset_dir.normalized()
         v_normal = x_line.cross(offset_dir_n).normalized()
         view_rot = rv3d.view_rotation
@@ -1162,6 +1213,8 @@ class OT_SketchupProDim(bpy.types.Operator):
                     cls_data['chain_offset_dist'] = obj["offset_dist"]
                     cls_data['chain_linear_axis'] = obj.get("linear_axis")
                     cls_data['linear_axis'] = obj.get("linear_axis")
+                    if "X_axis" in obj:
+                        cls_data['force_x_axis'] = Vector(obj["X_axis"])
                     
                     if len(pts) > 1:
                         line_dir = (pts[1] - pts[0]).normalized()
@@ -1239,5 +1292,115 @@ class OT_EditDimLine(bpy.types.Operator):
         
     def execute(self, context):
         bpy.ops.view3d.sketchup_pro_dim('INVOKE_DEFAULT', edit_dim_line_mode=True)
+        return {'FINISHED'}
+
+class OT_UpdateDimAnchors(bpy.types.Operator):
+    bl_idname = "view3d.update_dim_anchors"
+    bl_label = "Update Dimension Anchors"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    update_all: bpy.props.BoolProperty(name="Update All", default=False)
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def execute(self, context):
+        import json
+        from .utils import create_real_dimension, iter_dim_instances
+        
+        dims_to_update = list(iter_dim_instances()) if self.update_all else [obj for obj in context.selected_objects if obj.get("is_dim_instance")]
+        
+        if not dims_to_update:
+            self.report({'INFO'}, "No dimensions selected to update")
+            return {'CANCELLED'}
+        
+        updated_count = 0
+        depsgraph = context.evaluated_depsgraph_get()
+
+        # Cache for evaluated meshes to avoid repeated to_mesh() calls
+        mesh_cache = {}
+
+        for dim in dims_to_update:
+            if "anchors_json" not in dim:
+                continue
+                
+            anchors = json.loads(dim["anchors_json"])
+            points = []
+            
+            for anchor in anchors:
+                if not anchor:
+                    continue
+                    
+                obj_name = anchor.get("obj")
+                target_obj = bpy.data.objects.get(obj_name) if obj_name else None
+                world_loc = None
+                
+                if target_obj and not target_obj.hide_get():
+                    obj_eval = target_obj.evaluated_get(depsgraph)
+                    matrix_world = obj_eval.matrix_world.copy()
+                    
+                    if obj_name not in mesh_cache:
+                        try:
+                            m = obj_eval.to_mesh()
+                            mesh_cache[obj_name] = (m, obj_eval)
+                        except:
+                            mesh_cache[obj_name] = (None, None)
+                    
+                    mesh, _ = mesh_cache[obj_name]
+                    if mesh:
+                        if anchor["type"] == "VERTEX":
+                            idx = anchor["index"]
+                            if idx < len(mesh.vertices):
+                                world_loc = matrix_world @ mesh.vertices[idx].co
+                        elif anchor["type"] == "EDGE":
+                            v1_idx = anchor["v1"]
+                            v2_idx = anchor["v2"]
+                            factor = anchor["factor"]
+                            if v1_idx < len(mesh.vertices) and v2_idx < len(mesh.vertices):
+                                p1 = mesh.vertices[v1_idx].co
+                                p2 = mesh.vertices[v2_idx].co
+                                world_loc = matrix_world @ p1.lerp(p2, factor)
+                
+                if world_loc is None:
+                    target_obj = bpy.data.objects.get(obj_name) if obj_name else None
+                    if target_obj:
+                        world_loc = target_obj.matrix_world @ Vector(anchor["local_loc"])
+                    else:
+                        world_loc = Vector(anchor["local_loc"])
+                    
+                if "flatten" in anchor:
+                    axis, val = anchor["flatten"]
+                    if axis == 'X': world_loc.x = val
+                    elif axis == 'Y': world_loc.y = val
+                    elif axis == 'Z': world_loc.z = val
+                    
+                points.append(world_loc)
+
+            if len(points) == len(anchors) and len(points) >= 2:
+                p1_old = Vector(dim.get("p1", points[0]))
+                old_dir = Vector(dim["offset_dir"])
+                old_dist = dim["offset_dist"]
+                d_origin_old = p1_old + old_dir * old_dist
+                new_dist = (d_origin_old - points[0]).dot(old_dir)
+                
+                data = {
+                    'points': points,
+                    'offset_dir': old_dir,
+                    'offset_dist': new_dist,
+                    'style_id': dim["style_id"],
+                    'linear_axis': dim.get("linear_axis"),
+                    'anchors': anchors
+                }
+                if "X_axis" in dim:
+                    data['force_x_axis'] = Vector(dim["X_axis"])
+                create_real_dimension(data, context, existing_instance=dim)
+                updated_count += 1
+
+        for m, obj_e in mesh_cache.values():
+            if m and obj_e:
+                obj_e.to_mesh_clear()
+                
+        self.report({'INFO'}, f"Updated {updated_count} dimension(s)")
         return {'FINISHED'}
 
