@@ -157,7 +157,24 @@ class OT_SketchupProDim(bpy.types.Operator):
         cls_data['offset_snap_point'] = None
 
     def get_chain_projected_point(self, base_point, candidate_point):
-        pass
+        cls_data = self.__class__.data
+        if base_point is None or candidate_point is None:
+            return candidate_point
+
+        linear_axis_name = cls_data.get('chain_linear_axis')
+        if linear_axis_name:
+            axes = {'X': Vector((1, 0, 0)), 'Y': Vector((0, 1, 0)), 'Z': Vector((0, 0, 1))}
+            line_dir = axes.get(linear_axis_name)
+        elif cls_data.get('force_x_axis') is not None:
+            line_dir = cls_data.get('force_x_axis')
+        else:
+            line_dir = cls_data.get('chain_line_dir')
+
+        if line_dir is None or line_dir.length <= 0.0001:
+            return candidate_point
+
+        line_dir = line_dir.normalized()
+        return base_point + line_dir * (candidate_point - base_point).dot(line_dir)
 
     def begin_chain_mode(self, context, anchor_point, style_id, offset_dir, offset_dist, line_dir=None, linear_axis=None):
         cls_data = self.__class__.data
@@ -194,7 +211,18 @@ class OT_SketchupProDim(bpy.types.Operator):
         cls_data['offset_dir'] = offset_dir.copy()
         cls_data['snap_color'] = tuple(style.dim_text_color)
         cls_data['d1'] = p1 + offset_dir * offset_dist
-        cls_data['d2'] = p2 + offset_dir * offset_dist
+
+        line_axis = cls_data.get('force_x_axis')
+        if line_axis is None:
+            linear_axis_name = cls_data.get('chain_linear_axis')
+            if linear_axis_name:
+                axes = {'X': Vector((1, 0, 0)), 'Y': Vector((0, 1, 0)), 'Z': Vector((0, 0, 1))}
+                line_axis = axes.get(linear_axis_name)
+        if line_axis is not None and line_axis.length > 0.0001:
+            line_axis = line_axis.normalized()
+            cls_data['d2'] = cls_data['d1'] + line_axis * ((p2 - p1).dot(line_axis))
+        else:
+            cls_data['d2'] = p2 + offset_dir * offset_dist
 
     def build_dimension_payload(self, p1, p2, offset_dir, offset_dist, style_id):
         return {
@@ -238,7 +266,9 @@ class OT_SketchupProDim(bpy.types.Operator):
                 continue
 
             linear_axis_name = obj.get("linear_axis")
-            if linear_axis_name:
+            if "X_axis" in obj:
+                dim_axis = Vector(obj["X_axis"])
+            elif linear_axis_name:
                 axes_dict = {'X': Vector((1,0,0)), 'Y': Vector((0,1,0)), 'Z': Vector((0,0,1))}
                 dim_axis = axes_dict.get(linear_axis_name)
             else:
@@ -292,7 +322,9 @@ class OT_SketchupProDim(bpy.types.Operator):
                 continue
 
             linear_axis_name = obj.get("linear_axis")
-            if linear_axis_name:
+            if "X_axis" in obj:
+                dim_axis = Vector(obj["X_axis"])
+            elif linear_axis_name:
                 axes_dict = {'X': Vector((1,0,0)), 'Y': Vector((0,1,0)), 'Z': Vector((0,0,1))}
                 dim_axis = axes_dict.get(linear_axis_name)
             else:
@@ -327,6 +359,8 @@ class OT_SketchupProDim(bpy.types.Operator):
             'style_id': target_obj["style_id"],
             'linear_axis': target_obj.get("linear_axis"),
         }
+        if "X_axis" in target_obj:
+            data['force_x_axis'] = Vector(target_obj["X_axis"])
         create_real_dimension(data, context, existing_instance=target_obj)
         self.clear_snap_cache()
         return True, target_obj
@@ -350,6 +384,8 @@ class OT_SketchupProDim(bpy.types.Operator):
             'style_id': split_obj["style_id"],
             'linear_axis': split_obj.get("linear_axis"),
         }
+        if "X_axis" in split_obj:
+            data['force_x_axis'] = Vector(split_obj["X_axis"])
         create_real_dimension(data, context, existing_instance=split_obj)
         self.clear_snap_cache()
         return True, [split_obj]
@@ -701,7 +737,7 @@ class OT_SketchupProDim(bpy.types.Operator):
 
             elif cls_data['step'] == 1 and cls_data['snap_loc']:
                 if cls_data.get('chain_mode'):
-                    next_point = cls_data['snap_loc'].copy()
+                    next_point = self.get_chain_projected_point(cls_data['p1'], cls_data['snap_loc'])
                     if (next_point - cls_data['p1']).length <= 0.0001:
                         chain_inst = cls_data.get('chain_instance')
                         if chain_inst and "points_json" in chain_inst:
@@ -718,6 +754,8 @@ class OT_SketchupProDim(bpy.types.Operator):
                                     'linear_axis': cls_data.get('chain_linear_axis'),
                                     'anchors': [cls_data.get('anchor_p1'), cls_data.get('anchor_p2', cls_data.get('current_anchor'))]
                                 }
+                                if cls_data.get('force_x_axis'):
+                                    data['force_x_axis'] = cls_data['force_x_axis']
                                 create_real_dimension(data, context, existing_instance=chain_inst)
                             else:
                                 remove_dimension_instance(chain_inst)
@@ -947,7 +985,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             18.0,
         )
 
-        if not rv3d.is_perspective:
+        if not cls_data.get('editing_dim_line') and not rv3d.is_perspective:
             view_fwd = rv3d.view_rotation @ Vector((0, 0, -1))
             vp = view_fwd.cross(v_line)
             if vp.length > 0.001:
@@ -975,7 +1013,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         min_angle = math.radians(15)
         # Skip automatic axis snapping for the offset direction if we are forcing a specific orientation
         # (This prevents the dimension line from becoming slanted/skewed)
-        if not cls_data.get('force_x_axis'):
+        if not cls_data.get('editing_dim_line') and not cls_data.get('force_x_axis'):
             for axis_vec, color in axes.values():
                 a_perp = axis_vec - axis_vec.dot(v_line) * v_line
                 if a_perp.length <= 0.001:
@@ -1012,11 +1050,10 @@ class OT_SketchupProDim(bpy.types.Operator):
         cls_data['snap_color'] = snap_color
         cls_data['offset_snap_point'] = offset_snap_point
         
-        if linear_axis_name:
-            cls_data['d1'] = p1 + best_dir * final_dist
-            cls_data['d2'] = p1 + best_dir * final_dist + v_line * ((p2 - p1).dot(v_line))
+        cls_data['d1'] = p1 + best_dir * final_dist
+        if linear_axis_name or cls_data.get('force_x_axis'):
+            cls_data['d2'] = cls_data['d1'] + v_line * ((p2 - p1).dot(v_line))
         else:
-            cls_data['d1'] = p1 + best_dir * final_dist
             cls_data['d2'] = p2 + best_dir * final_dist
 
     def draw_callback_px(self, context):

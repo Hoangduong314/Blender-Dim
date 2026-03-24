@@ -353,6 +353,8 @@ def apply_dimension_style(instance_obj, scene):
         'style_id': instance_obj["style_id"],
         'linear_axis': instance_obj.get("linear_axis"),
     }
+    if "X_axis" in instance_obj:
+        data['force_x_axis'] = Vector(instance_obj["X_axis"])
     
     class DummyContext:
         def __init__(self, scene):
