@@ -836,6 +836,10 @@ class OT_SketchupProDim(bpy.types.Operator):
                             'style_id': style_id,
                             'linear_axis': cls_data.get('linear_axis'),
                         }
+                        if cls_data.get('force_x_axis'):
+                            data['force_x_axis'] = cls_data['force_x_axis']
+                        if "anchors_json" in obj:
+                            data['anchors'] = json.loads(obj["anchors_json"])
                         create_real_dimension(data, context, existing_instance=obj)
                         if hasattr(bpy.ops.ed, 'undo_push'):
                             bpy.ops.ed.undo_push(message="Edit Dimension Line")
