@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Pro 3D Dimension Tool",
     "author": "Pro CAD User",
-    "version": (1, 2, 1),
+    "version": (1, 3, 0),
     "blender": (3, 0, 0),
     "location": "View3D > UI (N Panel) > Pro Dim",
     "description": "A professional 3D dimensioning tool for Blender",

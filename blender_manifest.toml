@@ -3,7 +3,7 @@
 
 schema_version = "1.0.0"
 id = "pro_3d_dimension_tool"
-version = "1.2.1"
+version = "1.3.0"
 name = "Pro 3D Dimension Tool"
 tagline = "Professional 3D dimensioning tool for Blender"
 description = """Create precise, customizable, and styleable dimension lines for your models. Features include snapping, real-time previews, and a style library to manage different looks."""
