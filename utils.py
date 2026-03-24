@@ -156,11 +156,28 @@ def get_formatted_text(dist_bu, scene, style):
 
 
 def setup_shadeless_mat(mat_name, color):
-    mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
+    mat = bpy.data.materials.get(mat_name)
+    has_alpha = len(color) == 4 and color[3] < 1.0
+
+    if mat and mat.use_nodes:
+        mat.diffuse_color = color
+        if hasattr(mat, "blend_method"):
+            mat.blend_method = 'BLEND' if has_alpha else 'OPAQUE'
+        if hasattr(mat, "shadow_method"):
+            mat.shadow_method = 'NONE'
+
+        nodes = mat.node_tree.nodes
+        for node in nodes:
+            if node.type == 'BSDF_PRINCIPLED':
+                node.inputs[0].default_value = (color[0], color[1], color[2], 1.0) if has_alpha else color
+            elif node.type == 'MIX_SHADER':
+                node.inputs[0].default_value = color[3]
+        return mat
+
+    mat = bpy.data.materials.new(mat_name)
     mat.use_nodes = True
     mat.diffuse_color = color
 
-    has_alpha = len(color) == 4 and color[3] < 1.0
     if hasattr(mat, "blend_method"):
         mat.blend_method = 'BLEND' if has_alpha else 'OPAQUE'
     if hasattr(mat, "shadow_method"):

@@ -12,9 +12,18 @@ from mathutils import Matrix, Vector
 
 from .constants import *
 
+def update_callback_deferred():
+    try:
+        from .utils import update_all_dimensions
+        update_all_dimensions(None, bpy.context)
+    except Exception:
+        pass
+    return None
+
 def update_callback(self, context):
-    from .utils import update_all_dimensions
-    update_all_dimensions(self, context)
+    if not bpy.app.timers.is_registered(update_callback_deferred):
+        bpy.app.timers.register(update_callback_deferred, first_interval=0.01)
+
 
 class DimStyleItem(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(name="Style Name", default="Style", update=update_callback)
