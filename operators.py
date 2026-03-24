@@ -157,15 +157,9 @@ class OT_SketchupProDim(bpy.types.Operator):
         cls_data['offset_snap_point'] = None
 
     def get_chain_projected_point(self, base_point, candidate_point):
-        cls_data = self.__class__.data
-        line_dir = cls_data.get('chain_line_dir')
-        if base_point is None or candidate_point is None or line_dir is None:
-            return candidate_point
+        pass
 
-        line_dir = line_dir.normalized()
-        return base_point + line_dir * (candidate_point - base_point).dot(line_dir)
-
-    def begin_chain_mode(self, context, anchor_point, style_id, offset_dir, offset_dist, line_dir=None):
+    def begin_chain_mode(self, context, anchor_point, style_id, offset_dir, offset_dist, line_dir=None, linear_axis=None):
         cls_data = self.__class__.data
         cls_data['chain_mode'] = True
         cls_data['chain_style_id'] = style_id
@@ -173,6 +167,7 @@ class OT_SketchupProDim(bpy.types.Operator):
         cls_data['chain_offset_dist'] = offset_dist
         if line_dir is not None and line_dir.length > 0.0001:
             cls_data['chain_line_dir'] = line_dir.normalized().copy()
+        cls_data['chain_linear_axis'] = linear_axis
         cls_data['step'] = 1
         cls_data['p1'] = anchor_point.copy()
         cls_data['snap_loc'] = None
@@ -242,22 +237,29 @@ class OT_SketchupProDim(bpy.types.Operator):
             if abs(offset_dir.dot(chain_offset_dir)) < 0.9999 or abs(offset_dist - chain_offset_dist) > tolerance:
                 continue
 
+            linear_axis_name = obj.get("linear_axis")
+            if linear_axis_name:
+                axes_dict = {'X': Vector((1,0,0)), 'Y': Vector((0,1,0)), 'Z': Vector((0,0,1))}
+                dim_axis = axes_dict.get(linear_axis_name)
+            else:
+                dim_axis = (points[1] - points[0]).normalized() if (points[1] - points[0]).length>0.0001 else Vector((1,0,0))
+            if not dim_axis:
+                continue
+
+            t_p = point.dot(dim_axis)
             for i in range(len(points)-1):
                 p1, p2 = points[i], points[i+1]
-                segment = p2 - p1
-                if segment.length_squared < 0.0001: continue
-                factor = (point - p1).dot(segment) / segment.length_squared
-                if factor <= 0.0 or factor >= 1.0: continue
-                closest = p1.lerp(p2, factor)
-                dist = (closest - point).length
-                if dist > tolerance: continue
-                margin = min(0.001, segment.length * 0.25)
-                if (point - p1).length <= margin or (point - p2).length <= margin: continue
+                t1 = p1.dot(dim_axis)
+                t2 = p2.dot(dim_axis)
                 
-                if best_dist is None or dist < best_dist:
-                    best_obj = obj
-                    best_dist = dist
-                    best_idx = i + 1
+                # Check if projected point is between endpoints using robust inequalities
+                if (t1 <= t_p <= t2) or (t2 <= t_p <= t1):
+                    # We calculate a rough distance just so if multiple overlap, we take best
+                    dist = abs(t_p - (t1+t2)/2)
+                    if best_dist is None or dist < best_dist:
+                        best_obj = obj
+                        best_dist = dist
+                        best_idx = i + 1
                     
         return best_obj, best_idx
 
@@ -266,13 +268,11 @@ class OT_SketchupProDim(bpy.types.Operator):
         chain_offset_dir = cls_data.get('chain_offset_dir')
         chain_offset_dist = cls_data.get('chain_offset_dist')
         chain_style_id = cls_data.get('chain_style_id')
-        chain_line_dir = cls_data.get('chain_line_dir')
-        if point is None or chain_offset_dir is None or chain_offset_dist is None or chain_line_dir is None:
+        if point is None or chain_offset_dir is None or chain_offset_dist is None:
             return None, -1
 
         tolerance = 0.001
         chain_offset_dir = chain_offset_dir.normalized()
-        chain_line_dir = chain_line_dir.normalized()
         import json
 
         for obj in context.visible_objects:
@@ -291,8 +291,18 @@ class OT_SketchupProDim(bpy.types.Operator):
             if abs(offset_dir.dot(chain_offset_dir)) < 0.9999 or abs(offset_dist - chain_offset_dist) > tolerance:
                 continue
 
+            linear_axis_name = obj.get("linear_axis")
+            if linear_axis_name:
+                axes_dict = {'X': Vector((1,0,0)), 'Y': Vector((0,1,0)), 'Z': Vector((0,0,1))}
+                dim_axis = axes_dict.get(linear_axis_name)
+            else:
+                dim_axis = (points[1] - points[0]).normalized() if (points[1] - points[0]).length>0.0001 else Vector((1,0,0))
+            if not dim_axis:
+                continue
+
+            t_p = point.dot(dim_axis)
             for i, p in enumerate(points):
-                if abs((point - p).dot(chain_line_dir)) < tolerance:
+                if abs(p.dot(dim_axis) - t_p) < tolerance:
                     return obj, i
                     
         return None, -1
@@ -315,6 +325,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             'offset_dir': Vector(target_obj["offset_dir"]),
             'offset_dist': target_obj["offset_dist"],
             'style_id': target_obj["style_id"],
+            'linear_axis': target_obj.get("linear_axis"),
         }
         create_real_dimension(data, context, existing_instance=target_obj)
         self.clear_snap_cache()
@@ -337,6 +348,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             'offset_dir': Vector(split_obj["offset_dir"]),
             'offset_dist': split_obj["offset_dist"],
             'style_id': split_obj["style_id"],
+            'linear_axis': split_obj.get("linear_axis"),
         }
         create_real_dimension(data, context, existing_instance=split_obj)
         self.clear_snap_cache()
@@ -531,84 +543,68 @@ class OT_SketchupProDim(bpy.types.Operator):
         use_snap, snap_elements, _snap_target = self.get_snap_settings(context)
 
         face_loc = self.get_face_snap_candidate(context, coord)
-        if not use_snap or not snap_elements:
-            return face_loc
+        
+        def find_loc():
+            if not use_snap or not snap_elements:
+                return face_loc, 'FACE'
 
-        snap_cache = self.ensure_snap_cache(context)
-        threshold = 18.0
-        best_loc = None
-        best_dist = threshold
+            snap_cache = self.ensure_snap_cache(context)
+            threshold = 18.0
+            best_loc = None
+            best_dist = threshold
+            best_type = 'FACE'
 
-        if 'VERTEX' in snap_elements:
-            vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
-            if vertex_loc is not None and vertex_dist < best_dist:
-                best_loc = vertex_loc
-                best_dist = vertex_dist
+            if 'VERTEX' in snap_elements:
+                vertex_loc, vertex_dist = self.get_vertex_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
+                if vertex_loc is not None and vertex_dist < best_dist:
+                    best_loc = vertex_loc
+                    best_dist = vertex_dist
+                    best_type = 'VERTEX'
 
-        if 'EDGE_MIDPOINT' in snap_elements:
-            midpoint_loc, midpoint_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold, midpoint_only=True)
-            if midpoint_loc is not None and midpoint_dist < best_dist:
-                best_loc = midpoint_loc
-                best_dist = midpoint_dist
+            if 'EDGE_MIDPOINT' in snap_elements:
+                midpoint_loc, midpoint_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold, midpoint_only=True)
+                if midpoint_loc is not None and midpoint_dist < best_dist:
+                    best_loc = midpoint_loc
+                    best_dist = midpoint_dist
+                    best_type = 'MIDPOINT'
 
-        if 'EDGE' in snap_elements:
-            edge_loc, edge_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
-            if edge_loc is not None and edge_dist < best_dist:
-                best_loc = edge_loc
-                best_dist = edge_dist
+            if 'EDGE' in snap_elements:
+                edge_loc, edge_dist = self.get_edge_snap_candidate(region, rv3d, snap_cache, mouse_2d, threshold)
+                if edge_loc is not None and edge_dist < best_dist:
+                    best_loc = edge_loc
+                    best_dist = edge_dist
+                    best_type = 'EDGE'
 
-        if best_loc is not None:
-            return best_loc
+            if best_loc is not None:
+                return best_loc, best_type
 
-        if 'FACE' in snap_elements or 'FACE_NEAREST' in snap_elements:
-            return face_loc
+            if 'FACE' in snap_elements or 'FACE_NEAREST' in snap_elements:
+                return face_loc, 'FACE'
 
-        return face_loc
+            return face_loc, 'FACE'
+
+        raw_loc, snap_type = find_loc()
+
+        if raw_loc is not None and not rv3d.is_perspective:
+            view_fwd = rv3d.view_rotation @ Vector((0, 0, -1))
+            cursor_loc = context.scene.cursor.location if hasattr(context.scene, "cursor") else Vector((0,0,0))
+            if abs(view_fwd.x) > 0.99:
+                raw_loc = raw_loc.copy()
+                raw_loc.x = cursor_loc.x
+            elif abs(view_fwd.y) > 0.99:
+                raw_loc = raw_loc.copy()
+                raw_loc.y = cursor_loc.y
+            elif abs(view_fwd.z) > 0.99:
+                raw_loc = raw_loc.copy()
+                raw_loc.z = cursor_loc.z
+
+        return raw_loc, snap_type
 
     def update_proxy_text(self, context):
         preview_text = bpy.data.objects.get("Preview_Dim_Text")
-        if not preview_text:
-            return
-
-        cls_data = self.__class__.data
-        if (cls_data['step'] != 2 and not cls_data.get('chain_mode')) or not cls_data['d1']:
+        if preview_text:
             preview_text.hide_viewport = True
-            return
-
-        scene = context.scene
-        style = get_style_by_id(scene, cls_data.get('chain_style_id')) if cls_data.get('chain_mode') else get_active_style(scene)
-        p1, p2 = cls_data['p1'], cls_data['p2']
-        dist = (p1 - p2).length
-        scale_x = style.dim_scale_x
-        t_size = (style.dim_text_size_mm / 1000.0) * scale_x
-        t_gap = (style.dim_text_gap_mm / 1000.0) * scale_x
-        custom_font = get_or_load_font(style.dim_font_path)
-
-        preview_text.hide_viewport = False
-        preview_text.data.body = get_formatted_text(dist, scene, style)
-        preview_text.data.size = t_size
-        preview_text.data.align_y = 'BOTTOM'
-        if custom_font:
-            preview_text.data.font = custom_font
-        set_object_material(preview_text, get_style_materials(style)["preview"])
-
-        x_line = (p2 - p1).normalized()
-        offset_dir = cls_data['offset_dir'].normalized()
-        v_normal = x_line.cross(offset_dir).normalized()
-
-        rv3d = context.space_data.region_3d
-        view_rot = rv3d.view_rotation
-        view_fwd = view_rot @ Vector((0, 0, -1))
-        view_right = view_rot @ Vector((1, 0, 0))
-
-        z_axis = v_normal if v_normal.dot(view_fwd) < 0 else -v_normal
-        x_axis = x_line if x_line.dot(view_right) > 0 else -x_line
-        y_axis = z_axis.cross(x_axis).normalized()
-
-        rot_matrix = Matrix((x_axis, y_axis, z_axis)).transposed()
-        mid_point = (cls_data['d1'] + cls_data['d2']) / 2
-        preview_text.rotation_euler = rot_matrix.to_euler('XYZ')
-        preview_text.location = mid_point + y_axis * t_gap + z_axis * max(dist * 0.002, 0.001)
+        return
 
     def modal(self, context, event):
         nav_events = {
@@ -633,12 +629,23 @@ class OT_SketchupProDim(bpy.types.Operator):
             self.update_step_header(context)
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
+            
+        if cls_data['step'] == 2 and event.type in {'X', 'Y', 'Z'} and event.value == 'PRESS':
+            if cls_data.get('linear_axis') == event.type:
+                cls_data['linear_axis'] = None
+            else:
+                cls_data['linear_axis'] = event.type
+            self.calculate_combined_offset(context)
+            self.update_proxy_text(context)
+            context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
 
         if event.type == 'MOUSEMOVE':
             self.mouse_pos = Vector((event.mouse_region_x, event.mouse_region_y))
             if cls_data['step'] < 2:
-                raw_loc = self.get_raw_snap_location(context, event)
+                raw_loc, snap_type = self.get_raw_snap_location(context, event)
                 cls_data['snap_loc_raw'] = raw_loc
+                cls_data['snap_type'] = snap_type
                 cls_data['snap_loc'] = self.apply_p2_constraint(raw_loc) if cls_data['step'] == 1 else raw_loc
                 if cls_data.get('chain_mode') and cls_data['step'] == 1:
                     self.refresh_chain_preview(context)
@@ -657,7 +664,7 @@ class OT_SketchupProDim(bpy.types.Operator):
 
             elif cls_data['step'] == 1 and cls_data['snap_loc']:
                 if cls_data.get('chain_mode'):
-                    next_point = self.get_chain_projected_point(cls_data['p1'], cls_data['snap_loc'])
+                    next_point = cls_data['snap_loc'].copy()
                     if (next_point - cls_data['p1']).length <= 0.0001:
                         chain_inst = cls_data.get('chain_instance')
                         if chain_inst and "points_json" in chain_inst:
@@ -671,6 +678,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                                     'offset_dir': cls_data['chain_offset_dir'],
                                     'offset_dist': cls_data['chain_offset_dist'],
                                     'style_id': cls_data['chain_style_id'],
+                                    'linear_axis': cls_data.get('chain_linear_axis'),
                                 }
                                 create_real_dimension(data, context, existing_instance=chain_inst)
                             else:
@@ -735,6 +743,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                             'offset_dir': cls_data['chain_offset_dir'],
                             'offset_dist': cls_data['chain_offset_dist'],
                             'style_id': cls_data['chain_style_id'],
+                            'linear_axis': cls_data.get('chain_linear_axis'),
                         }
                         create_real_dimension(data, context, existing_instance=chain_inst)
                     else:
@@ -742,7 +751,8 @@ class OT_SketchupProDim(bpy.types.Operator):
                             'points': [cls_data['p1'], next_point],
                             'offset_dir': cls_data['chain_offset_dir'],
                             'offset_dist': cls_data['chain_offset_dist'],
-                            'style_id': cls_data['chain_style_id']
+                            'style_id': cls_data['chain_style_id'],
+                            'linear_axis': cls_data.get('chain_linear_axis'),
                         }, context)
                         cls_data['chain_instance'] = new_dim
                     self.begin_chain_mode(
@@ -752,6 +762,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                         cls_data['chain_offset_dir'],
                         cls_data['chain_offset_dist'],
                         cls_data.get('chain_line_dir'),
+                        linear_axis=cls_data.get('chain_linear_axis'),
                     )
                     self.update_proxy_text(context)
                     context.area.tag_redraw()
@@ -775,6 +786,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                             'offset_dir': cls_data['offset_dir'],
                             'offset_dist': cls_data['offset_dist'],
                             'style_id': style_id,
+                            'linear_axis': cls_data.get('linear_axis'),
                         }
                         create_real_dimension(data, context, existing_instance=obj)
                         if hasattr(bpy.ops.ed, 'undo_push'):
@@ -789,8 +801,10 @@ class OT_SketchupProDim(bpy.types.Operator):
                     'offset_dir': cls_data['offset_dir'],
                     'offset_dist': cls_data['offset_dist'],
                     'style_id': style_id,
+                    'linear_axis': cls_data.get('linear_axis'),
                 }, context)
                 cls_data['chain_instance'] = first_dim
+                cls_data['chain_linear_axis'] = cls_data.get('linear_axis')
                 
                 self.clear_snap_cache()
                 if hasattr(bpy.ops.ed, 'undo_push'):
@@ -804,6 +818,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                     cls_data['offset_dir'],
                     cls_data['offset_dist'],
                     (cls_data['p2'] - cls_data['p1']).normalized(),
+                    linear_axis=cls_data.get('linear_axis'),
                 )
                 self.update_proxy_text(context)
                 context.area.tag_redraw()
@@ -823,7 +838,18 @@ class OT_SketchupProDim(bpy.types.Operator):
         if (p2 - p1).length < 0.0001:
             return
 
-        v_line = (p2 - p1).normalized()
+        axes = {
+            'X': (Vector((1, 0, 0)), (1.0, 0.2, 0.2, 1.0)),
+            'Y': (Vector((0, 1, 0)), (0.2, 1.0, 0.2, 1.0)),
+            'Z': (Vector((0, 0, 1)), (0.2, 0.6, 1.0, 1.0)),
+        }
+        
+        linear_axis_name = cls_data.get('linear_axis')
+        if linear_axis_name:
+            v_line = axes[linear_axis_name][0]
+        else:
+            v_line = (p2 - p1).normalized()
+
         region = context.region
         rv3d = context.space_data.region_3d
         ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, self.mouse_pos)
@@ -854,6 +880,25 @@ class OT_SketchupProDim(bpy.types.Operator):
             self.mouse_pos,
             18.0,
         )
+
+        if not rv3d.is_perspective:
+            view_fwd = rv3d.view_rotation @ Vector((0, 0, -1))
+            vp = view_fwd.cross(v_line)
+            if vp.length > 0.001:
+                vp_dir = vp.normalized()
+                if free_dir.dot(vp_dir) < 0:
+                    vp_dir = -vp_dir
+                best_dir = vp_dir
+                
+                plane_normal = v_line.cross(best_dir).normalized()
+                pt_intersect = mathutils.geometry.intersect_line_plane(
+                    ray_origin,
+                    ray_origin + ray_dir,
+                    p1,
+                    plane_normal,
+                )
+                if pt_intersect:
+                    final_dist = (pt_intersect - p1).dot(best_dir)
 
         axes = {
             'X': (Vector((1, 0, 0)), (1.0, 0.2, 0.2, 1.0)),
@@ -897,8 +942,13 @@ class OT_SketchupProDim(bpy.types.Operator):
         cls_data['offset_dist'] = final_dist
         cls_data['snap_color'] = snap_color
         cls_data['offset_snap_point'] = offset_snap_point
-        cls_data['d1'] = p1 + best_dir * final_dist
-        cls_data['d2'] = p2 + best_dir * final_dist
+        
+        if linear_axis_name:
+            cls_data['d1'] = p1 + best_dir * final_dist
+            cls_data['d2'] = p1 + best_dir * final_dist + v_line * ((p2 - p1).dot(v_line))
+        else:
+            cls_data['d1'] = p1 + best_dir * final_dist
+            cls_data['d2'] = p2 + best_dir * final_dist
 
     def draw_callback_px(self, context):
         if context.area is None:
@@ -917,11 +967,34 @@ class OT_SketchupProDim(bpy.types.Operator):
             snap_2d = view3d_utils.location_3d_to_region_2d(region, rv3d, marker_loc)
             if snap_2d:
                 size = 6
-                batch = batch_for_shader(
-                    SHADER,
-                    'LINES',
-                    {"pos": [(snap_2d.x - size, snap_2d.y), (snap_2d.x + size, snap_2d.y), (snap_2d.x, snap_2d.y - size), (snap_2d.x, snap_2d.y + size)]},
-                )
+                snap_type = cls_data.get('snap_type')
+                if snap_type == 'VERTEX':
+                    pos = [
+                        (snap_2d.x - size, snap_2d.y - size), (snap_2d.x + size, snap_2d.y - size),
+                        (snap_2d.x + size, snap_2d.y - size), (snap_2d.x + size, snap_2d.y + size),
+                        (snap_2d.x + size, snap_2d.y + size), (snap_2d.x - size, snap_2d.y + size),
+                        (snap_2d.x - size, snap_2d.y + size), (snap_2d.x - size, snap_2d.y - size)
+                    ]
+                elif snap_type == 'MIDPOINT':
+                    pos = [
+                        (snap_2d.x - size, snap_2d.y - size), (snap_2d.x + size, snap_2d.y - size),
+                        (snap_2d.x + size, snap_2d.y - size), (snap_2d.x, snap_2d.y + size),
+                        (snap_2d.x, snap_2d.y + size), (snap_2d.x - size, snap_2d.y - size)
+                    ]
+                elif snap_type == 'EDGE':
+                    pos = [
+                        (snap_2d.x - size, snap_2d.y - size), (snap_2d.x + size, snap_2d.y - size),
+                        (snap_2d.x + size, snap_2d.y - size), (snap_2d.x - size, snap_2d.y + size),
+                        (snap_2d.x - size, snap_2d.y + size), (snap_2d.x + size, snap_2d.y + size),
+                        (snap_2d.x + size, snap_2d.y + size), (snap_2d.x - size, snap_2d.y - size)
+                    ]
+                else:
+                    pos = [
+                        (snap_2d.x - size, snap_2d.y), (snap_2d.x + size, snap_2d.y),
+                        (snap_2d.x, snap_2d.y - size), (snap_2d.x, snap_2d.y + size)
+                    ]
+
+                batch = batch_for_shader(SHADER, 'LINES', {"pos": pos})
                 SHADER.bind()
                 SHADER.uniform_float("color", (1, 0, 0, 1))
                 batch.draw(SHADER)
@@ -957,7 +1030,7 @@ class OT_SketchupProDim(bpy.types.Operator):
                 SHADER.uniform_float("color", (1.0, 0.75, 0.2, 1.0))
                 batch.draw(SHADER)
 
-        if (step != 2 and not cls_data.get('chain_mode')) or not cls_data['d1'] or not cls_data['d2']:
+        if step != 2 or not cls_data['d1'] or not cls_data['d2']:
             return
 
         style = get_style_by_id(context.scene, cls_data.get('chain_style_id')) if cls_data.get('chain_mode') else get_active_style(context.scene)
@@ -1052,6 +1125,7 @@ class OT_SketchupProDim(bpy.types.Operator):
             'step': 0,
             'snap_loc': None,
             'snap_loc_raw': None,
+            'snap_type': None,
             'p1': None,
             'p2': None,
             'd1': None,
@@ -1069,6 +1143,8 @@ class OT_SketchupProDim(bpy.types.Operator):
             'chain_offset_dist': None,
             'chain_line_dir': None,
             'chain_instance': None,
+            'chain_linear_axis': None,
+            'linear_axis': None,
             'editing_dim_line': False,
         }
 
@@ -1084,6 +1160,8 @@ class OT_SketchupProDim(bpy.types.Operator):
                     cls_data['chain_style_id'] = obj.get("style_id", active_style.style_id)
                     cls_data['chain_offset_dir'] = Vector(obj["offset_dir"])
                     cls_data['chain_offset_dist'] = obj["offset_dist"]
+                    cls_data['chain_linear_axis'] = obj.get("linear_axis")
+                    cls_data['linear_axis'] = obj.get("linear_axis")
                     
                     if len(pts) > 1:
                         line_dir = (pts[1] - pts[0]).normalized()

@@ -334,6 +334,7 @@ def apply_dimension_style(instance_obj, scene):
         'offset_dir': Vector(instance_obj["offset_dir"]),
         'offset_dist': instance_obj["offset_dist"],
         'style_id': instance_obj["style_id"],
+        'linear_axis': instance_obj.get("linear_axis"),
     }
     
     class DummyContext:
@@ -371,6 +372,12 @@ def create_real_dimension(data, context, existing_instance=None):
     offset_dir = data['offset_dir'].normalized()
     offset_dist = data.get('offset_dist', 0.0)
     
+    linear_axis_name = data.get('linear_axis')
+    linear_axis = None
+    if linear_axis_name:
+        axes_vecs = {'X': Vector((1,0,0)), 'Y': Vector((0,1,0)), 'Z': Vector((0,0,1))}
+        linear_axis = axes_vecs.get(linear_axis_name)
+    
     if 'points' in data:
         points = [Vector(p) for p in data['points']]
     else:
@@ -395,7 +402,10 @@ def create_real_dimension(data, context, existing_instance=None):
 
     viewport_color = tuple(style.dim_text_color)
     
-    first_x_line = (points[1] - points[0]).normalized() if (points[1] - points[0]).length>0.0001 else Vector((1,0,0))
+    if linear_axis:
+        first_x_line = linear_axis
+    else:
+        first_x_line = (points[1] - points[0]).normalized() if (points[1] - points[0]).length>0.0001 else Vector((1,0,0))
     v_normal = first_x_line.cross(offset_dir).normalized()
     if v_normal.length < 0.0001:
         v_normal = Vector((0,0,1))
@@ -454,7 +464,9 @@ def create_real_dimension(data, context, existing_instance=None):
 
     for i in range(len(points)):
         pt_loc = points[i] - p0
-        d_loc = pt_loc + offset_dir * offset_dist
+        
+        t = pt_loc.dot(first_x_line)
+        d_loc = offset_dir * offset_dist + t * first_x_line
         
         if style.dim_ext_use_fixed:
             start_loc = d_loc - offset_dir * fixed_len
@@ -472,7 +484,7 @@ def create_real_dimension(data, context, existing_instance=None):
             dim_edges.append((i-1, i))
             
             prev_d_loc = dim_verts[i-1]
-            dist_raw = (points[i] - points[i-1]).length
+            dist_raw = abs((points[i] - points[i-1]).dot(first_x_line))
             text_str_seg = get_formatted_text(dist_raw, scene, style)
             
             font_data = bpy.data.curves.new(name="DimText_Data", type='FONT')
@@ -519,6 +531,10 @@ def create_real_dimension(data, context, existing_instance=None):
     set_viewport_display_color(instance_obj, viewport_color)
     import json
     instance_obj["is_dim_instance"] = True
+    if linear_axis_name:
+        instance_obj["linear_axis"] = linear_axis_name
+    elif "linear_axis" in instance_obj:
+        del instance_obj["linear_axis"]
     instance_obj["points_json"] = json.dumps([[v.x, v.y, v.z] for v in points])
     instance_obj["offset_dir"] = offset_dir
     instance_obj["offset_dist"] = offset_dist

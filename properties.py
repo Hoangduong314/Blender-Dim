@@ -61,7 +61,7 @@ class DimStyleItem(bpy.types.PropertyGroup):
         default='ARROW',
         update=update_callback,
     )
-    dim_arrow_size_mm: bpy.props.FloatProperty(name="Arrow Size", default=3.0, min=0.1, update=update_callback)
+    dim_arrow_size_mm: bpy.props.FloatProperty(name="Arrow Size", default=1.5, min=0.1, update=update_callback)
     dim_ext_use_fixed: bpy.props.BoolProperty(name="Fixed Ext Lines", default=True, update=update_callback)
     dim_ext_fixed_len_mm: bpy.props.FloatProperty(name="Fixed Length", default=4.0, min=1.0, update=update_callback)
 
