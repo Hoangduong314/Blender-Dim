@@ -453,6 +453,7 @@ def create_real_dimension(data, context, existing_instance=None):
     if existing_instance:
         col_data = existing_instance.instance_collection
         instance_obj = existing_instance
+        instance_obj.location = p0
         if col_data:
             for obj in list(col_data.objects):
                 data_block = obj.data

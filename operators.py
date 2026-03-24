@@ -1378,10 +1378,16 @@ class OT_UpdateDimAnchors(bpy.types.Operator):
                 points.append(world_loc)
 
             if len(points) == len(anchors) and len(points) >= 2:
-                p1_old = Vector(dim.get("p1", points[0]))
+                # Use current world position of the empty as the reference for p1_old
+                # This ensures that even if p1 moved, we know where the line is currently in the world
+                p1_old = dim.matrix_world.translation.copy()
                 old_dir = Vector(dim["offset_dir"])
                 old_dist = dim["offset_dist"]
+                
+                # The old dimension line origin was at p1_old + old_dir * old_dist
                 d_origin_old = p1_old + old_dir * old_dist
+                
+                # New distance is the projection of (d_origin_old - new_p1) onto old_dir
                 new_dist = (d_origin_old - points[0]).dot(old_dir)
                 
                 data = {
