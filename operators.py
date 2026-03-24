@@ -910,18 +910,29 @@ class OT_SketchupProDim(bpy.types.Operator):
         if not pt_mouse:
             return
 
-        v_raw = pt_mouse - p1
-        v_perp = v_raw - v_raw.dot(v_line) * v_line
-        if v_perp.length < 0.001:
-            return
-
         style = get_active_style(context.scene)
-        free_dir = v_perp.normalized()
-        best_dir = free_dir
-        snap_color = tuple(style.dim_text_color)
-        final_dist = v_perp.length
-        offset_snap_point = None
-        offset_snap_color = (1.0, 0.75, 0.2, 1.0)
+        
+        # If we are in "Edit Dim Line" mode, we MUST keep the original offset direction (plane)
+        # only changing the scalar distance along that direction.
+        if cls_data.get('editing_dim_line') and cls_data.get('chain_offset_dir'):
+            best_dir = cls_data['chain_offset_dir'].normalized()
+            # Project mouse onto the fixed offset direction
+            final_dist = (pt_mouse - p1).dot(best_dir)
+            snap_color = tuple(style.dim_text_color)
+            offset_snap_point = None
+            offset_snap_color = (1.0, 0.75, 0.2, 1.0)
+        else:
+            v_raw = pt_mouse - p1
+            v_perp = v_raw - v_raw.dot(v_line) * v_line
+            if v_perp.length < 0.001:
+                return
+
+            free_dir = v_perp.normalized()
+            best_dir = free_dir
+            snap_color = tuple(style.dim_text_color)
+            final_dist = v_perp.length
+            offset_snap_point = None
+            offset_snap_color = (1.0, 0.75, 0.2, 1.0)
 
         dim_line_cache = self.ensure_dim_line_snap_cache(context)
         dim_snap_loc, _dim_snap_dist = self.get_dim_line_snap_candidate(
@@ -958,31 +969,34 @@ class OT_SketchupProDim(bpy.types.Operator):
         }
 
         min_angle = math.radians(15)
-        for axis_vec, color in axes.values():
-            a_perp = axis_vec - axis_vec.dot(v_line) * v_line
-            if a_perp.length <= 0.001:
-                continue
+        # Skip automatic axis snapping for the offset direction if we are forcing a specific orientation
+        # (This prevents the dimension line from becoming slanted/skewed)
+        if not cls_data.get('force_x_axis'):
+            for axis_vec, color in axes.values():
+                a_perp = axis_vec - axis_vec.dot(v_line) * v_line
+                if a_perp.length <= 0.001:
+                    continue
 
-            snap_dir = a_perp.normalized()
-            if free_dir.dot(snap_dir) < 0:
-                snap_dir = -snap_dir
+                snap_dir = a_perp.normalized()
+                if free_dir.dot(snap_dir) < 0:
+                    snap_dir = -snap_dir
 
-            angle = free_dir.angle(snap_dir)
-            if angle < min_angle:
-                min_angle = angle
-                best_dir = snap_dir
-                snap_color = color
+                angle = free_dir.angle(snap_dir)
+                if angle < min_angle:
+                    min_angle = angle
+                    best_dir = snap_dir
+                    snap_color = color
 
-                plane_normal = v_line.cross(best_dir).normalized()
-                pt_intersect = mathutils.geometry.intersect_line_plane(
-                    ray_origin,
-                    ray_origin + ray_dir,
-                    p1,
-                    plane_normal,
-                )
-                if pt_intersect:
-                    final_dist = (pt_intersect - p1).dot(best_dir)
-                break
+                    plane_normal = v_line.cross(best_dir).normalized()
+                    pt_intersect = mathutils.geometry.intersect_line_plane(
+                        ray_origin,
+                        ray_origin + ray_dir,
+                        p1,
+                        plane_normal,
+                    )
+                    if pt_intersect:
+                        final_dist = (pt_intersect - p1).dot(best_dir)
+                    break
 
         if dim_snap_loc is not None:
             final_dist = (dim_snap_loc - p1).dot(best_dir)
