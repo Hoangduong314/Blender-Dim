@@ -1,14 +1,8 @@
-import math
-import uuid
 import json
-import bmesh
-import mathutils.geometry
 import bpy
-import gpu
-import mathutils
 from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
-from mathutils import Matrix, Vector
+from mathutils import Vector
 
 from .constants import *
 from .properties import *
@@ -247,7 +241,6 @@ class OT_SketchupProDim(bpy.types.Operator):
         best_idx = -1
         tolerance = 0.001
         chain_offset_dir = chain_offset_dir.normalized()
-        import json
 
         for obj in context.visible_objects:
             if obj.hide_get() or not obj.get("is_dim_instance") or obj.get("style_id") != chain_style_id:
@@ -303,7 +296,6 @@ class OT_SketchupProDim(bpy.types.Operator):
 
         tolerance = 0.001
         chain_offset_dir = chain_offset_dir.normalized()
-        import json
 
         for obj in context.visible_objects:
             if obj.hide_get() or not obj.get("is_dim_instance") or obj.get("style_id") != chain_style_id:
@@ -343,7 +335,6 @@ class OT_SketchupProDim(bpy.types.Operator):
         target_obj, target_idx = self.get_dimension_merge_candidates(context, point)
         if not target_obj: return False, None
         
-        import json
         points = [Vector(p) for p in json.loads(target_obj["points_json"])]
         points.pop(target_idx)
         
@@ -369,7 +360,6 @@ class OT_SketchupProDim(bpy.types.Operator):
         split_obj, insert_idx = self.get_dimension_split_candidate(context, point)
         if split_obj is None: return False, []
 
-        import json
         if "points_json" in split_obj:
             points = [Vector(p) for p in json.loads(split_obj["points_json"])]
         else:
@@ -459,7 +449,6 @@ class OT_SketchupProDim(bpy.types.Operator):
             return cls_data['dim_line_snap_cache']
 
         dim_line_cache = []
-        import json
         for obj in context.visible_objects:
             if obj.hide_get() or not obj.get("is_dim_instance"):
                 continue
@@ -741,7 +730,6 @@ class OT_SketchupProDim(bpy.types.Operator):
                     if (next_point - cls_data['p1']).length <= 0.0001:
                         chain_inst = cls_data.get('chain_instance')
                         if chain_inst and "points_json" in chain_inst:
-                            import json
                             pts = [Vector(p) for p in json.loads(chain_inst["points_json"])]
                             if len(pts) > 2:
                                 pts.pop()
@@ -780,7 +768,6 @@ class OT_SketchupProDim(bpy.types.Operator):
                         if (next_point - cls_data['p1']).length <= 0.0001:
                             chain_inst = cls_data.get('chain_instance')
                             if chain_inst and "points_json" in chain_inst:
-                                import json
                                 pts = [Vector(p) for p in json.loads(chain_inst["points_json"])]
                                 if len(pts) > 0:
                                     cls_data['p1'] = pts[-1].copy()
@@ -811,7 +798,6 @@ class OT_SketchupProDim(bpy.types.Operator):
                         
                     chain_inst = cls_data.get('chain_instance')
                     if chain_inst and "points_json" in chain_inst:
-                        import json
                         pts = [Vector(p) for p in json.loads(chain_inst["points_json"])]
                         pts.append(next_point)
                         anchors = []
@@ -864,7 +850,6 @@ class OT_SketchupProDim(bpy.types.Operator):
                 if cls_data.get('editing_dim_line'):
                     obj = cls_data.get('chain_instance')
                     if obj and "points_json" in obj:
-                        import json
                         pts = [Vector(p) for p in json.loads(obj["points_json"])]
                         style_id = obj.get("style_id", get_active_style(context.scene).style_id)
                         data = {
@@ -1257,7 +1242,6 @@ class OT_SketchupProDim(bpy.types.Operator):
         if self.edit_mode or self.edit_dim_line_mode:
             obj = context.active_object
             if obj and obj.get("is_dim_instance"):
-                import json
                 pts = [Vector(p) for p in json.loads(obj["points_json"])]
                 if len(pts) > 0:
                     cls_data = self.__class__.data
@@ -1361,7 +1345,6 @@ class OT_UpdateDimAnchors(bpy.types.Operator):
         return True
 
     def execute(self, context):
-        import json
         from .utils import create_real_dimension, iter_dim_instances
         
         dims_to_update = list(iter_dim_instances()) if self.update_all else [obj for obj in context.selected_objects if obj.get("is_dim_instance")]

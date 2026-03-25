@@ -19,7 +19,6 @@ else:
     from . import constants, properties, utils, operators, ui
 
 import bpy
-from bpy.app.handlers import persistent
 
 classes = (
     properties.DimStyleItem,

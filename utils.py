@@ -1,13 +1,7 @@
-import math
 import uuid
 import json
 import bmesh
-import mathutils.geometry
 import bpy
-import gpu
-import mathutils
-from bpy_extras import view3d_utils
-from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 
 from .constants import *
@@ -340,7 +334,6 @@ def build_arrow_mesh(mesh, arrow_style, d1_loc, d2_loc, x_axis, y_axis, arrow_si
 
 
 def apply_dimension_style(instance_obj, scene):
-    import json
     if "points_json" in instance_obj:
         points = [Vector(p) for p in json.loads(instance_obj["points_json"])]
     else:
@@ -451,7 +444,6 @@ def create_real_dimension(data, context, existing_instance=None):
 
     rot_matrix = Matrix((x_axis, y_axis, z_axis)).transposed()
     
-    import uuid
     if existing_instance:
         col_data = existing_instance.instance_collection
         instance_obj = existing_instance
@@ -551,7 +543,6 @@ def create_real_dimension(data, context, existing_instance=None):
     set_viewport_display_color(obj_arrows, viewport_color)
 
     set_viewport_display_color(instance_obj, viewport_color)
-    import json
     instance_obj["is_dim_instance"] = True
     if linear_axis_name:
         instance_obj["linear_axis"] = linear_axis_name

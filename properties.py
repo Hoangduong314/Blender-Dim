@@ -1,16 +1,4 @@
-import math
-import uuid
-import json
-import bmesh
-import mathutils.geometry
 import bpy
-import gpu
-import mathutils
-from bpy_extras import view3d_utils
-from gpu_extras.batch import batch_for_shader
-from mathutils import Matrix, Vector
-
-from .constants import *
 
 def update_callback_deferred():
     try:
